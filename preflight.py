@@ -62,9 +62,9 @@ def main():
     val_data = np.load(val_p)
     test_data = np.load(test_p)
 
-    check("Train shape is (8000, 2, 32, 32)", train_data.shape == (8000, 2, 32, 32))
+    check("Train shape is (7000, 2, 32, 32)", train_data.shape == (7000, 2, 32, 32))
     check("Val shape is (1000, 2, 32, 32)", val_data.shape == (1000, 2, 32, 32))
-    check("Test shape is (1000, 2, 32, 32)", test_data.shape == (1000, 2, 32, 32))
+    check("Test shape is (2000, 2, 32, 32)", test_data.shape == (2000, 2, 32, 32))
     check("Data dtype is float32", train_data.dtype == np.float32)
 
     with open(norm_p, "r") as f:

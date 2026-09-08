@@ -14,9 +14,9 @@ def test_processed_dataset_shapes_and_types():
     val = np.load(data_dir / "val.npy")
     test = np.load(data_dir / "test.npy")
 
-    assert train.shape == (8000, 2, 32, 32)
+    assert train.shape == (7000, 2, 32, 32)
     assert val.shape == (1000, 2, 32, 32)
-    assert test.shape == (1000, 2, 32, 32)
+    assert test.shape == (2000, 2, 32, 32)
 
     assert train.dtype == np.float32
     assert val.dtype == np.float32

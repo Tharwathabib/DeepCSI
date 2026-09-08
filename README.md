@@ -66,9 +66,9 @@ deepcsi-core/
 ├── data/
 │   ├── raw/
 │   ├── processed/
-│   │   ├── train.npy         (8000, 2, 32, 32)
+│   │   ├── train.npy         (7000, 2, 32, 32)
 │   │   ├── val.npy           (1000, 2, 32, 32)
-│   │   ├── test.npy          (1000, 2, 32, 32)
+│   │   ├── test.npy          (2000, 2, 32, 32)
 │   │   └── norm_params.json
 │   └── generate_data.py
 │
@@ -131,7 +131,7 @@ pip install -r requirements.txt
 ```bash
 python data/generate_data.py
 ```
-*Generates 10,000 samples (8k train / 1k val / 1k test) of $2 \times 32 \times 32$ angular-delay CSI matrices with global min-max normalization.*
+*Generates 10,000 samples (7k train / 1k val / 2k test) of $2 \times 32 \times 32$ angular-delay CSI matrices with global min-max normalization.*
 
 ### 3. Train DeepCSI Autoencoders
 

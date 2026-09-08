@@ -92,6 +92,17 @@ def get_health():
     }
 
 
+@app.post("/reload")
+def reload_server_resources():
+    """Dynamically reload dataset and model checkpoints into memory."""
+    load_resources()
+    return {
+        "status": "reloaded",
+        "models_loaded": list(LOADED_MODELS.keys()),
+        "test_samples": len(TEST_DATA) if TEST_DATA is not None else 0
+    }
+
+
 @app.get("/sample/{index}")
 def get_sample(index: int):
     """Retrieve raw test sample matrix given an index."""

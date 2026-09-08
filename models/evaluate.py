@@ -181,6 +181,40 @@ def main():
     pivot_nmse = df_combined.pivot(index="compression_ratio", columns="method", values="nmse_db_mean")
     pivot_nmse.to_csv(results_dir / "nmse_comparison.csv")
 
+    # Generate before/after split comparison if baseline 80/10/10 metrics exist
+    baseline_csv = results_dir / "metrics_80_10_10.csv"
+    if baseline_csv.exists():
+        df_base = pd.read_csv(baseline_csv)
+        comparison_rows = []
+        for _, row_curr in df_combined.iterrows():
+            m = row_curr["method"]
+            cr = row_curr["compression_ratio"]
+            base_match = df_base[(df_base["method"] == m) & (df_base["compression_ratio"] == cr)]
+            if not base_match.empty:
+                b_row = base_match.iloc[0]
+                nmse_before = b_row["nmse_db_mean"]
+                std_before = b_row["nmse_db_std"]
+                lat_before = b_row["inference_ms"]
+                nmse_after = row_curr["nmse_db_mean"]
+                std_after = row_curr["nmse_db_std"]
+                lat_after = row_curr["inference_ms"]
+                delta_nmse = round(nmse_after - nmse_before, 2)
+                comparison_rows.append({
+                    "method": m,
+                    "compression_ratio": cr,
+                    "nmse_before_80_10_10": nmse_before,
+                    "std_before_80_10_10": std_before,
+                    "nmse_after_70_10_20": nmse_after,
+                    "std_after_70_10_20": std_after,
+                    "delta_nmse_db": delta_nmse,
+                    "latency_before_ms": lat_before,
+                    "latency_after_ms": lat_after
+                })
+        df_comparison = pd.DataFrame(comparison_rows)
+        df_comparison.to_csv(results_dir / "split_comparison.csv", index=False)
+        print("\n=== Dataset Split Accuracy Comparison: 80/10/10 vs 70/10/20 ===")
+        print(df_comparison.to_string(index=False))
+
     print(f"\nSaved combined metrics to '{results_dir / 'metrics.csv'}'")
     print("\n=== NMSE Comparison Table (dB) ===")
     print(pivot_nmse.to_string())

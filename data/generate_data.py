@@ -95,10 +95,10 @@ def main():
     normalized_tensor = (raw_tensor - global_min) / (global_max - global_min + 1e-10)
     print(f"Normalized Tensor Range: min={normalized_tensor.min():.6f}, max={normalized_tensor.max():.6f}")
     
-    # Train / Val / Test Split: 8000 / 1000 / 1000
-    train_data = normalized_tensor[:8000]
-    val_data = normalized_tensor[8000:9000]
-    test_data = normalized_tensor[9000:]
+    # Train / Val / Test Split: 7000 / 1000 / 2000 (70% / 10% / 20%)
+    train_data = normalized_tensor[:7000]
+    val_data = normalized_tensor[7000:8000]
+    test_data = normalized_tensor[8000:]
     
     print(f"Train set shape: {train_data.shape}, dtype={train_data.dtype}")
     print(f"Val set shape:   {val_data.shape}, dtype={val_data.dtype}")
