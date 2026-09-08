@@ -1,0 +1,31 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Data
+data/raw/*
+data/processed/*.npy
+data/processed/*.json
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Models
+models/weights/*.pt
+!models/weights/.gitkeep
+
+# Results
+results/*.csv
+results/figures/*.png
+!results/.gitkeep
+!results/figures/.gitkeep
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
