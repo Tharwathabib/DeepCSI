@@ -55,5 +55,9 @@ def test_predict_with_mocked_model(monkeypatch, tmp_path):
     assert data["compression_ratio"] == 16
     assert data["compressed_dim"] == 128
     assert data["bandwidth_saved_percent"] == 93.75
+    assert "beamforming_gain_percent" in data
+    assert 0.0 <= data["beamforming_gain_percent"] <= 100.0
+    assert "beamforming_loss_db" in data
+    assert data["beamforming_loss_db"] <= 0.01  # <= 0.0 dB (allowing tiny float round)
     assert len(data["original_matrix_real"]) == 32
     assert len(data["reconstructed_matrix_real"]) == 32

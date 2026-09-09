@@ -11,7 +11,7 @@ root_dir = Path(__file__).resolve().parent
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
-from utils.metrics import nmse_db
+from utils.metrics import nmse_db, beamforming_gain_torch
 from models.csi_autoencoder import CSIAutoencoder
 
 
@@ -89,8 +89,10 @@ def main():
             with torch.no_grad():
                 recon, latent = model(test_tensor)
                 nmse_val = nmse_db(recon, test_tensor).item()
+                bf_val = beamforming_gain_torch(recon, test_tensor).item()
 
             check(f"CR={cr} model forward pass & finite NMSE ({nmse_val:.2f} dB)", np.isfinite(nmse_val))
+            check(f"CR={cr} downstream MRT beamforming gain valid ({bf_val*100:.2f}%)", 0.0 <= bf_val <= 1.0)
             check(f"CR={cr} latent shape matches expected ({2048//cr})", latent.shape == (10, 2048 // cr))
         except Exception as e:
             check(f"CR={cr} model verification", False, str(e))

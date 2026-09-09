@@ -13,7 +13,7 @@ root_dir = Path(__file__).resolve().parent.parent
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
-from utils.metrics import nmse_db
+from utils.metrics import nmse_db, beamforming_gain_numpy, beamforming_loss_db
 from models.csi_autoencoder import CSIAutoencoder
 
 app = FastAPI(
@@ -47,6 +47,8 @@ class PredictResponse(BaseModel):
     original_scalars: int
     compressed_dim: int
     nmse_db: float
+    beamforming_gain_percent: float
+    beamforming_loss_db: float
     inference_ms: float
     original_matrix_real: List[List[float]]
     reconstructed_matrix_real: List[List[float]]
@@ -167,6 +169,10 @@ def predict(req: PredictRequest):
     original_scalars = 2048
     bandwidth_saved = (1.0 - (latent_dim / original_scalars)) * 100.0
 
+    # Calculate downstream beamforming power gain
+    bf_gain_val = float(beamforming_gain_numpy(recon_np, sample_np))
+    bf_loss_val = float(beamforming_loss_db(bf_gain_val))
+
     return PredictResponse(
         sample_index=req.sample_index,
         compression_ratio=req.compression_ratio,
@@ -175,6 +181,8 @@ def predict(req: PredictRequest):
         original_scalars=original_scalars,
         compressed_dim=latent_dim,
         nmse_db=round(nmse_val, 2),
+        beamforming_gain_percent=round(bf_gain_val * 100.0, 2),
+        beamforming_loss_db=round(bf_loss_val, 2),
         inference_ms=round(inference_ms, 3),
         original_matrix_real=sample_np[0].tolist(),
         reconstructed_matrix_real=recon_np[0].tolist(),

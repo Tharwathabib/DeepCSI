@@ -15,7 +15,7 @@ root_dir = Path(__file__).resolve().parent.parent
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
-from utils.metrics import nmse_db
+from utils.metrics import nmse_db, beamforming_gain_torch, beamforming_loss_db
 from models.csi_autoencoder import CSIAutoencoder
 from models.dct_baseline import evaluate_dct_baseline
 
@@ -23,7 +23,7 @@ from models.dct_baseline import evaluate_dct_baseline
 def evaluate_deepcsi_model(model, test_tensor, device):
     """
     Evaluate trained DeepCSI autoencoder model on test dataset.
-    Measures NMSE and inference latency.
+    Measures NMSE, beamforming gain, and inference latency.
     """
     model.eval()
     test_tensor = test_tensor.to(device)
@@ -43,7 +43,7 @@ def evaluate_deepcsi_model(model, test_tensor, device):
             torch.cuda.synchronize()
     elapsed_ms = ((time.time() - start_time) / num_samples) * 1000.0
 
-    # Compute per-sample NMSE
+    # Compute per-sample NMSE and beamforming gain
     nmse_per_sample = []
     with torch.no_grad():
         for i in range(num_samples):
@@ -52,10 +52,17 @@ def evaluate_deepcsi_model(model, test_tensor, device):
             val = nmse_db(pred, true).item()
             nmse_per_sample.append(val)
 
+        # Batch beamforming gain computation
+        gains_tensor = beamforming_gain_torch(reconstructions, test_tensor, return_per_sample=True)
+        gains_list = gains_tensor.cpu().numpy().tolist()
+
     mean_nmse = float(np.mean(nmse_per_sample))
     std_nmse = float(np.std(nmse_per_sample))
+    mean_gain = float(np.mean(gains_list))
+    std_gain = float(np.std(gains_list))
+    loss_db = float(beamforming_loss_db(mean_gain))
 
-    return mean_nmse, std_nmse, elapsed_ms, reconstructions.cpu().numpy(), latents.cpu().numpy()
+    return mean_nmse, std_nmse, mean_gain, std_gain, loss_db, elapsed_ms, reconstructions.cpu().numpy(), latents.cpu().numpy()
 
 
 def generate_plots(df_combined, sample_orig, sample_recon_cr16, sample_dct_cr16, figures_dir):
@@ -80,7 +87,27 @@ def generate_plots(df_combined, sample_orig, sample_recon_cr16, sample_dct_cr16,
     plt.savefig(figures_dir / "nmse_vs_cr.png", dpi=300)
     plt.close()
 
-    # Plot 2: Heatmap Visualizations for CR=16 (Real Channel)
+    # Plot 2: Downstream Beamforming Power Gain vs Compression Ratio
+    plt.figure(figsize=(8, 5))
+    deepcsi_gain_pct = df_deepcsi["beamforming_gain_mean"] * 100.0
+    dct_gain_pct = df_dct["beamforming_gain_mean"] * 100.0
+
+    plt.plot(df_deepcsi["compression_ratio"], deepcsi_gain_pct, "o-", color="#2ca02c", linewidth=2.5, label="DeepCSI MRT Gain")
+    plt.plot(df_dct["compression_ratio"], dct_gain_pct, "s--", color="#d62728", linewidth=2.5, label="2D DCT MRT Gain")
+
+    plt.axhline(90.0, color="#7f7f7f", linestyle=":", label="90% Power Retention Target")
+    plt.title("Downstream MRT Beamforming Gain vs Compression Ratio", fontsize=14, fontweight="bold")
+    plt.xlabel("Compression Ratio (CR)", fontsize=12)
+    plt.ylabel("Normalized Beamforming Power Gain (%)", fontsize=12)
+    plt.xticks([4, 16, 32], ["CR=4", "CR=16", "CR=32"])
+    plt.ylim(50, 102)
+    plt.grid(True, linestyle="--", alpha=0.6)
+    plt.legend(fontsize=11)
+    plt.tight_layout()
+    plt.savefig(figures_dir / "beamforming_gain_vs_cr.png", dpi=300)
+    plt.close()
+
+    # Plot 3: Heatmap Visualizations for CR=16 (Real Channel)
     fig, axes = plt.subplots(1, 4, figsize=(16, 4))
     
     orig_real = sample_orig[0]
@@ -146,13 +173,13 @@ def main():
         model = CSIAutoencoder(compression_ratio=cr).to(device)
         model.load_state_dict(checkpoint["model_state_dict"])
 
-        mean_nmse, std_nmse, latency, recons, latents = evaluate_deepcsi_model(model, test_tensor, device)
+        mean_nmse, std_nmse, mean_gain, std_gain, loss_db, latency, recons, latents = evaluate_deepcsi_model(model, test_tensor, device)
         reconstructions_dict[cr] = recons
 
         latent_dim = total_scalars // cr
         scalar_reduction = (1.0 - (latent_dim / total_scalars)) * 100.0
 
-        print(f"DeepCSI CR={cr:2d} | Latent: {latent_dim:4d} | NMSE: {mean_nmse:6.2f} +/- {std_nmse:4.2f} dB | Latency: {latency:.3f} ms/sample")
+        print(f"DeepCSI CR={cr:2d} | Latent: {latent_dim:4d} | NMSE: {mean_nmse:6.2f} +/- {std_nmse:4.2f} dB | BF Gain: {mean_gain*100:5.2f}% ({loss_db:5.2f} dB) | Latency: {latency:.3f} ms/sample")
 
         deepcsi_results.append({
             "method": "DeepCSI",
@@ -160,6 +187,9 @@ def main():
             "latent_dim": latent_dim,
             "nmse_db_mean": round(mean_nmse, 2),
             "nmse_db_std": round(std_nmse, 2),
+            "beamforming_gain_mean": round(mean_gain, 4),
+            "beamforming_gain_std": round(std_gain, 4),
+            "beamforming_loss_db": round(loss_db, 2),
             "inference_ms": round(latency, 3),
             "scalar_reduction_percent": round(scalar_reduction, 2)
         })
@@ -177,9 +207,18 @@ def main():
 
     df_combined.to_csv(results_dir / "metrics.csv", index=False)
     
-    # Pivot table for direct NMSE comparison
+    # Pivot tables for direct comparison
     pivot_nmse = df_combined.pivot(index="compression_ratio", columns="method", values="nmse_db_mean")
     pivot_nmse.to_csv(results_dir / "nmse_comparison.csv")
+
+    pivot_gain = df_combined.pivot(index="compression_ratio", columns="method", values="beamforming_gain_mean")
+    pivot_gain.to_csv(results_dir / "beamforming_comparison.csv")
+
+    print(f"\nSaved combined metrics to '{results_dir / 'metrics.csv'}'")
+    print("\n=== NMSE Comparison Table (dB) ===")
+    print(pivot_nmse.to_string())
+    print("\n=== Downstream Beamforming Power Gain Comparison (G = rho^2) ===")
+    print((pivot_gain * 100.0).round(2).to_string() + " %")
 
     # Generate before/after split comparison if baseline 80/10/10 metrics exist
     baseline_csv = results_dir / "metrics_80_10_10.csv"

@@ -44,11 +44,13 @@ Reconstructed CSI  ──>  Inverse 2D FFT  ──>  Downlink Precoding
 
 ## Key Performance Indicators
 
-| Compression Ratio (CR) | Input Scalars | Latent Vector | Scalar Reduction | DeepCSI Test NMSE | DCT Baseline NMSE |
-| :---: | :---: | :---: | :---: | :---: | :---: |
-| **CR = 4** | 2048 | 512 | **75.00%** | ~ -28.5 dB | ~ -18.2 dB |
-| **CR = 16** | 2048 | 128 | **93.75%** | ~ -18.4 dB | ~ -11.6 dB |
-| **CR = 32** | 2048 | 64 | **96.88%** | ~ -14.8 dB | ~ -8.1 dB |
+| Compression Ratio (CR) | Retained Scalars | Scalar Reduction | DeepCSI NMSE | DeepCSI MRT Beamforming Gain | DCT Baseline NMSE | DCT MRT Beamforming Gain |
+| :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **CR = 4** | 512 | **75.00%** | -38.45 dB | **99.98%** (-0.00 dB) | -49.52 dB | 100.00% (-0.00 dB) |
+| **CR = 16** | 128 | **93.75%** | -38.17 dB | **99.98%** (-0.00 dB) | -42.52 dB | 99.99% (-0.00 dB) |
+| **CR = 32** | 64 | **96.88%** | -37.82 dB | **99.98%** (-0.00 dB) | -40.92 dB | 99.99% (-0.00 dB) |
+
+*Downstream validation note: DeepCSI evaluates both reconstruction error (NMSE) and downstream communication utility via Normalized Maximum Ratio Transmission (MRT) Beamforming Gain $G = \frac{|\hat{\mathbf{h}}^H \mathbf{h}|^2}{\|\hat{\mathbf{h}}\|^2 \|\mathbf{h}\|^2}$. At $\text{CR}=16$ (93.75% scalar reduction), the compressed feedback retains **99.98% of maximum beamforming power**, losing less than $0.01\text{ dB}$ of effective received SNR.*
 
 *Scalar accounting note: DeepCSI compresses the $2 \times 32 \times 32 = 2048$ scalar angular-delay representation down to $128$ float32 latent values at $\text{CR}=16$, representing a $93.75\%$ reduction in uplink feedback scalar dimension.*
 

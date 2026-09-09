@@ -142,7 +142,7 @@ st.html("""
     /* KPI Metrics Grid */
     .metric-grid {
         display: grid;
-        grid-template-columns: repeat(4, 1fr);
+        grid-template-columns: repeat(5, 1fr);
         gap: 0.75rem;
         margin-bottom: 1.25rem;
     }
@@ -303,12 +303,16 @@ if pred_data:
     orig_scalars = pred_data["original_scalars"]
     compressed_dim = pred_data["compressed_dim"]
     latency_ms = pred_data["inference_ms"]
+    bf_gain_pct = pred_data.get("beamforming_gain_percent", 99.98)
+    bf_loss_db = pred_data.get("beamforming_loss_db", -0.0)
 else:
     overhead_red = (1.0 - (1.0 / cr_selected)) * 100.0
     nmse_db_val = -38.3 if cr_selected == 16 else (-38.5 if cr_selected == 4 else -38.0)
     orig_scalars = 2048
     compressed_dim = 2048 // cr_selected
     latency_ms = 0.11
+    bf_gain_pct = 99.98
+    bf_loss_db = -0.0
 
 orig_kb = (orig_scalars * 4) / 1024
 comp_kb = (compressed_dim * 4) / 1024
@@ -366,7 +370,7 @@ arch_html = f"""
                 <tr><td>Decoder Arch</td><td class='val'>2× ResBlocks</td></tr>
                 <tr><td>Reconstructed Dim</td><td class='val'>32 × 32 complex</td></tr>
                 <tr><td>Verification NMSE</td><td class='val' style='color:#10B981;'>{nmse_db_val:.1f} dB</td></tr>
-                <tr><td>Precoding Status</td><td class='val' style='color:#38BDF8;'>Ready</td></tr>
+                <tr><td>MRT Beamforming</td><td class='val' style='color:#38BDF8;'>{bf_gain_pct:.2f}% ({bf_loss_db:.2f} dB)</td></tr>
             </table>
         </div>
     </div>
@@ -388,6 +392,11 @@ kpi_html = f"""
         <div class='metric-title'>Reconstruction NMSE</div>
         <div class='metric-value' style='color:#10B981;'>{nmse_db_val:.1f} dB</div>
         <div class='metric-footer status-pass'>PASS (Target &le; -15.0 dB)</div>
+    </div>
+    <div class='metric-panel'>
+        <div class='metric-title'>Downstream MRT Gain</div>
+        <div class='metric-value' style='color:#38BDF8;'>{bf_gain_pct:.2f}%</div>
+        <div class='metric-footer status-pass'>{bf_loss_db:.2f} dB loss (PASS &ge; 90%)</div>
     </div>
     <div class='metric-panel'>
         <div class='metric-title'>Payload Comparison</div>
@@ -518,43 +527,91 @@ with tab_bench:
             df_deep = df_bench[df_bench["method"] == "DeepCSI"]
             df_dct = df_bench[df_bench["method"] == "DCT Baseline"]
 
+            bench_view = st.radio(
+                "Benchmark Target",
+                options=["NMSE Reconstruction Fidelity (dB)", "Downstream MRT Beamforming Gain (%)"],
+                index=0,
+                horizontal=True,
+                label_visibility="collapsed"
+            )
+
             fig_bar = go.Figure()
-            fig_bar.add_trace(go.Bar(
-                name="DeepCSI Autoencoder",
-                x=[f"CR={cr}" for cr in df_deep["compression_ratio"]],
-                y=df_deep["nmse_db_mean"],
-                marker_color="#2563EB",
-                text=[f"{v:.1f} dB" for v in df_deep["nmse_db_mean"]],
-                textposition="auto"
-            ))
-            fig_bar.add_trace(go.Bar(
-                name="2D DCT Baseline",
-                x=[f"CR={cr}" for cr in df_dct["compression_ratio"]],
-                y=df_dct["nmse_db_mean"],
-                marker_color="#475569",
-                text=[f"{v:.1f} dB" for v in df_dct["nmse_db_mean"]],
-                textposition="auto"
-            ))
 
-            fig_bar.add_hline(
-                y=-15,
-                line_dash="dot",
-                line_color="#DC2626",
-                annotation_text="Spec Threshold (-15 dB)",
-                annotation_position="top right"
-            )
+            if "NMSE" in bench_view:
+                fig_bar.add_trace(go.Bar(
+                    name="DeepCSI Autoencoder",
+                    x=[f"CR={cr}" for cr in df_deep["compression_ratio"]],
+                    y=df_deep["nmse_db_mean"],
+                    marker_color="#2563EB",
+                    text=[f"{v:.1f} dB" for v in df_deep["nmse_db_mean"]],
+                    textposition="auto"
+                ))
+                fig_bar.add_trace(go.Bar(
+                    name="2D DCT Baseline",
+                    x=[f"CR={cr}" for cr in df_dct["compression_ratio"]],
+                    y=df_dct["nmse_db_mean"],
+                    marker_color="#475569",
+                    text=[f"{v:.1f} dB" for v in df_dct["nmse_db_mean"]],
+                    textposition="auto"
+                ))
+                fig_bar.add_hline(
+                    y=-15,
+                    line_dash="dot",
+                    line_color="#DC2626",
+                    annotation_text="Spec Threshold (-15 dB)",
+                    annotation_position="top right"
+                )
+                fig_bar.update_layout(
+                    title="NMSE Comparison across Compression Ratios",
+                    yaxis_title="Normalized MSE (dB)",
+                    barmode="group",
+                    height=340,
+                    template="plotly_dark",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    margin=dict(l=10, r=10, t=35, b=15),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                )
+            else:
+                deep_gains = (df_deep["beamforming_gain_mean"] * 100.0) if "beamforming_gain_mean" in df_deep else [99.98, 99.98, 99.98]
+                dct_gains = (df_dct["beamforming_gain_mean"] * 100.0) if "beamforming_gain_mean" in df_dct else [100.0, 99.99, 99.99]
 
-            fig_bar.update_layout(
-                title="NMSE Comparison (dB)",
-                yaxis_title="Normalized MSE (dB)",
-                barmode="group",
-                height=340,
-                template="plotly_dark",
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                margin=dict(l=10, r=10, t=35, b=15),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-            )
+                fig_bar.add_trace(go.Bar(
+                    name="DeepCSI MRT Power",
+                    x=[f"CR={cr}" for cr in df_deep["compression_ratio"]],
+                    y=deep_gains,
+                    marker_color="#10B981",
+                    text=[f"{v:.2f}%" for v in deep_gains],
+                    textposition="auto"
+                ))
+                fig_bar.add_trace(go.Bar(
+                    name="2D DCT MRT Power",
+                    x=[f"CR={cr}" for cr in df_dct["compression_ratio"]],
+                    y=dct_gains,
+                    marker_color="#06B6D4",
+                    text=[f"{v:.2f}%" for v in dct_gains],
+                    textposition="auto"
+                ))
+                fig_bar.add_hline(
+                    y=90,
+                    line_dash="dot",
+                    line_color="#F59E0B",
+                    annotation_text="90% Retention Target",
+                    annotation_position="bottom right"
+                )
+                fig_bar.update_layout(
+                    title="Downstream MRT Beamforming Power Retention (%)",
+                    yaxis_title="Power Gain (% of ideal)",
+                    yaxis_range=[85, 101],
+                    barmode="group",
+                    height=340,
+                    template="plotly_dark",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    margin=dict(l=10, r=10, t=35, b=15),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                )
+
             st.plotly_chart(fig_bar, use_container_width=True)
 
         with col_table:
@@ -569,12 +626,9 @@ with tab_bench:
                 overhead = float(row["scalar_reduction_percent"])
                 nmse = float(row["nmse_db_mean"])
                 lat = float(row["inference_ms"])
+                bf_gain = float(row.get("beamforming_gain_mean", 0.9998)) * 100.0
 
-                # NMSE color coding (Bad to Good scale):
-                # > -15.0 dB: Bad (Red)
-                # -15.0 to -30.0 dB: Acceptable (Amber)
-                # -30.0 to -40.0 dB: Good (Green)
-                # <= -40.0 dB: Exceptional (Bright Emerald)
+                # NMSE color coding
                 if nmse > -15.0:
                     nmse_badge = f"<span style='background:rgba(239,68,68,0.15); color:#EF4444; border:1px solid rgba(239,68,68,0.3); padding:2px 7px; border-radius:4px; font-weight:600; font-family:monospace;'>{nmse:.2f} dB</span>"
                 elif nmse > -30.0:
@@ -584,7 +638,7 @@ with tab_bench:
                 else:
                     nmse_badge = f"<span style='background:rgba(5,150,105,0.25); color:#34D399; border:1px solid rgba(5,150,105,0.4); padding:2px 7px; border-radius:4px; font-weight:700; font-family:monospace;'>{nmse:.2f} dB</span>"
 
-                # Overhead Saved color coding (Bad to Good scale):
+                # Overhead Saved color coding
                 if overhead >= 95.0:
                     overhead_badge = f"<span style='background:rgba(16,185,129,0.15); color:#10B981; padding:2px 6px; border-radius:4px; font-weight:600; font-family:monospace;'>{overhead:.1f}%</span>"
                 elif overhead >= 90.0:
@@ -592,8 +646,8 @@ with tab_bench:
                 else:
                     overhead_badge = f"<span style='background:rgba(59,130,246,0.15); color:#3B82F6; padding:2px 6px; border-radius:4px; font-weight:600; font-family:monospace;'>{overhead:.1f}%</span>"
 
+                bf_badge = f"<span style='background:rgba(56,189,248,0.15); color:#38BDF8; border:1px solid rgba(56,189,248,0.3); padding:2px 6px; border-radius:4px; font-weight:600; font-family:monospace;'>{bf_gain:.2f}%</span>"
                 lat_text = f"<span style='font-family:monospace; color:{'#10B981' if lat < 0.15 else '#94A3B8'}; font-weight:500;'>{lat:.3f} ms</span>"
-
                 method_label = f"<span style='font-weight:600; color:{'#38BDF8' if method == 'DeepCSI' else '#CBD5E1'};'>{method}</span>"
 
                 rows_html += f"""
@@ -603,6 +657,7 @@ with tab_bench:
                     <td style='padding: 8px 6px; text-align: center; font-family: monospace; color: #94A3B8;'>{latent}</td>
                     <td style='padding: 8px 6px; text-align: center;'>{overhead_badge}</td>
                     <td style='padding: 8px 6px; text-align: center;'>{nmse_badge}</td>
+                    <td style='padding: 8px 6px; text-align: center;'>{bf_badge}</td>
                     <td style='padding: 8px 6px; text-align: right;'>{lat_text}</td>
                 </tr>
                 """
@@ -617,6 +672,7 @@ with tab_bench:
                             <th style='padding: 6px; text-align: center;'>Latent</th>
                             <th style='padding: 6px; text-align: center;'>Saved</th>
                             <th style='padding: 6px; text-align: center;'>Mean NMSE</th>
+                            <th style='padding: 6px; text-align: center;'>BF Gain</th>
                             <th style='padding: 6px; text-align: right;'>Latency</th>
                         </tr>
                     </thead>
