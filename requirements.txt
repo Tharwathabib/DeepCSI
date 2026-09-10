@@ -1,11 +1,17 @@
 numpy>=1.22.0
 scipy>=1.10.0
 torch>=2.0.0
-torchvision>=0.15.0
+pandas>=1.5.0
+matplotlib>=3.6.0
+h5py>=3.7.0
 fastapi>=0.95.0
 uvicorn>=0.21.0
-pydantic>=1.10.0
+# backend/app.py uses Pydantic v2-only APIs (field_validator, model_validator);
+# a v1 install fails at import time.
+pydantic>=2.0
 requests>=2.28.0
 streamlit>=1.22.0
 plotly>=5.13.0
 pytest>=7.0.0
+# required by fastapi.testclient.TestClient, used in backend/test_backend.py
+httpx>=0.24.0
