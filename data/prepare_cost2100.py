@@ -76,6 +76,49 @@ SPLIT_FILES = {
 MAT_KEY = "HT"
 
 
+def resolve_mat_path(mat_dir: Path, filename: str) -> Path:
+    """
+    Locate one .mat file under mat_dir, tolerating an extra nesting level.
+
+    Downloaders routinely drop the files into a subfolder, so try the exact path
+    first and then search recursively. On failure, report what is actually on
+    disk -- a bare "file not found" sends people back to re-downloading when the
+    real problem is usually a wrong directory or a truncated download.
+    """
+    exact = mat_dir / filename
+    if exact.exists():
+        return exact
+
+    matches = sorted(mat_dir.glob(f"**/{filename}"))
+    if matches:
+        print(f"  (found at {matches[0]})")
+        return matches[0]
+
+    lines = [f"Missing COST2100 file: {exact}"]
+    if mat_dir.exists():
+        present = sorted(p for p in mat_dir.glob("**/*") if p.is_file())
+        if present:
+            lines.append(f"\n{len(present)} file(s) currently under {mat_dir}:")
+            for p in present[:25]:
+                size_mb = p.stat().st_size / 1e6
+                flag = "   <-- too small, likely a failed download" if size_mb < 1 else ""
+                lines.append(f"  {size_mb:9.1f} MB  {p.relative_to(mat_dir)}{flag}")
+            if len(present) > 25:
+                lines.append(f"  ... and {len(present) - 25} more")
+        else:
+            lines.append(f"\n{mat_dir} exists but is empty -- the download produced nothing.")
+    else:
+        lines.append(f"\n{mat_dir} does not exist.")
+
+    lines.append(
+        "\nExpected (indoor): DATA_Htrainin.mat (~1.6 GB), DATA_Hvalin.mat (~0.5 GB), "
+        "DATA_Htestin.mat (~0.3 GB)."
+        "\nIf files are present but only a few KB, gdown saved Google's HTML warning "
+        "page instead of the data -- see notebooks/deepcsi_colab.ipynb, Route B."
+    )
+    raise FileNotFoundError("\n".join(lines))
+
+
 def load_mat_array(path: Path, key: str = MAT_KEY) -> np.ndarray:
     """
     Read one COST2100 .mat file and return its raw (N, 2048) array.
@@ -84,13 +127,6 @@ def load_mat_array(path: Path, key: str = MAT_KEY) -> np.ndarray:
     raises NotImplementedError, so fall back to h5py and undo its transposed
     axis order.
     """
-    if not path.exists():
-        raise FileNotFoundError(
-            f"Missing COST2100 file: {path}\n"
-            f"Download the dataset and place the .mat files in {path.parent}.\n"
-            f"See notebooks/deepcsi_colab.ipynb for the download cells."
-        )
-
     from scipy.io import loadmat
 
     try:
@@ -259,8 +295,8 @@ def main():
     splits = {}
     for split_name, template in SPLIT_FILES.items():
         filename = template.format(suffix=env["suffix"])
-        path = mat_dir / filename
         print(f"Loading {filename} ...")
+        path = resolve_mat_path(mat_dir, filename)
         raw = load_mat_array(path)
         data = to_csi_tensor(raw)
 
