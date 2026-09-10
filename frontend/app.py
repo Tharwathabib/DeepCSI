@@ -1,4 +1,5 @@
 import io
+import os
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -412,18 +413,35 @@ st.html("""
 
 # Sidebar Controls
 st.sidebar.markdown("<div class='sidebar-title'>Connection & Parameters</div>", unsafe_allow_html=True)
-backend_url = st.sidebar.text_input("API Endpoint", value="http://localhost:8000", label_visibility="collapsed")
+DEFAULT_API_URL = os.getenv("DEEPCSI_API_URL", "http://localhost:8000")
+backend_url = st.sidebar.text_input("API Endpoint", value=DEFAULT_API_URL, label_visibility="collapsed")
 
 # Backend Health Verification
 health_data = None
 backend_online = False
+wrong_service = False
 try:
     resp = requests.get(f"{backend_url}/health", timeout=1.2)
     if resp.status_code == 200:
-        health_data = resp.json()
-        backend_online = True
+        payload = resp.json()
+        # A bare 200 is not proof this is DeepCSI -- any other service on the
+        # port answers too, and then every /predict fails mid-demo. Require a
+        # field only this API returns.
+        if "available_models" in payload:
+            health_data = payload
+            backend_online = True
+        else:
+            wrong_service = True
 except Exception:
     backend_online = False
+
+if wrong_service:
+    st.sidebar.error(
+        f"Something is answering at {backend_url}, but it is not the DeepCSI API. "
+        "Another service is using that port. Start DeepCSI on a free port:\n\n"
+        "`python -m uvicorn backend.app:app --port 8001`\n\n"
+        "then set the endpoint above to `http://localhost:8001`."
+    )
 
 if backend_online and health_data:
     st.sidebar.markdown(f"""

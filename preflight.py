@@ -121,14 +121,27 @@ def main():
             check(f"CR={cr} model verification", False, str(e))
 
     # 4. Optional Backend API Reachability
+    api_url = os.getenv("DEEPCSI_API_URL", "http://localhost:8000")
     try:
-        resp = requests.get("http://localhost:8000/health", timeout=1)
-        if resp.status_code == 200:
-            print("       Info: FastAPI backend is running and reachable on http://localhost:8000")
+        resp = requests.get(f"{api_url}/health", timeout=1)
+        if resp.status_code != 200:
+            print(f"       Info: {api_url} returned HTTP {resp.status_code} (server may be starting).")
         else:
-            print("       Info: FastAPI backend returned non-200 status (Server may be starting).")
+            payload = resp.json()
+            # A 200 proves something is listening, not that it is DeepCSI. Any
+            # other service on the port answers too, and then every /predict
+            # fails during the demo -- so check for a field only this API returns.
+            if "available_models" in payload:
+                print(f"       Info: DeepCSI backend reachable on {api_url} "
+                      f"(models: {payload['available_models']})")
+            else:
+                print(f"       WARNING: {api_url} is serving a DIFFERENT application, not DeepCSI.")
+                print(f"                Response: {str(payload)[:120]}")
+                print( "                Start DeepCSI on a free port and point the dashboard at it:")
+                print( "                  python -m uvicorn backend.app:app --port 8001")
+                print( "                  set DEEPCSI_API_URL=http://localhost:8001")
     except Exception:
-        print("       Info: FastAPI backend not running locally (Will be started for demo).")
+        print(f"       Info: no backend responding at {api_url} (will be started for the demo).")
 
     print("\n===========================================================")
     print("               DEEPCSI PREFLIGHT: PASS                     ")
