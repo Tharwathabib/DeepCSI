@@ -1,10 +1,11 @@
-import streamlit as st
-import requests
+import io
+from pathlib import Path
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import pandas as pd
-from pathlib import Path
+import requests
+import streamlit as st
 
 # Page Configuration
 st.set_page_config(
@@ -12,6 +13,200 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+
+def synthesize_channel(
+    n_antennas: int = 32,
+    n_delays: int = 32,
+    n_clusters: int = 5,
+    angle_center: int = 14,
+    decay_rate: float = 0.15,
+    noise_sigma: float = 0.0,
+    seed: int = 42
+):
+    """Generate on-the-fly 3GPP-inspired angular-delay channel matrix."""
+    rng = np.random.default_rng(seed)
+    H_ad = np.zeros((n_antennas, n_delays), dtype=np.complex64)
+    delay_indices = np.arange(n_delays)
+    delay_decay = np.exp(-decay_rate * delay_indices)
+
+    for _ in range(n_clusters):
+        a_pos_center = (angle_center + rng.integers(-6, 7)) % n_antennas
+        d_pos_center = rng.integers(0, min(16, n_delays))
+        amp = rng.rayleigh(scale=1.0) * delay_decay[d_pos_center]
+        phase = rng.uniform(0, 2 * np.pi)
+        gain = amp * np.exp(1j * phase)
+
+        for a_off in range(-2, 3):
+            a_pos = (a_pos_center + a_off) % n_antennas
+            for d_off in range(0, 3):
+                d_pos = d_pos_center + d_off
+                if d_pos < n_delays:
+                    w_a = np.exp(-0.8 * (a_off ** 2))
+                    w_d = np.exp(-0.5 * (d_off ** 2))
+                    H_ad[a_pos, d_pos] += gain * w_a * w_d
+
+    if noise_sigma > 0:
+        noise = (rng.normal(0, noise_sigma, (n_antennas, n_delays)) + 
+                 1j * rng.normal(0, noise_sigma, (n_antennas, n_delays))) / np.sqrt(2)
+        H_ad += noise.astype(np.complex64)
+
+    return np.real(H_ad).tolist(), np.imag(H_ad).tolist()
+
+
+def build_physics_visual(
+    n_clusters: int = 5,
+    angle_center: int = 14,
+    decay_rate: float = 0.15,
+    noise_sigma: float = 0.0,
+    seed: int = 42
+) -> go.Figure:
+    """Construct an interactive 2-panel Plotly diagram showing real-time 3GPP multipath geometry and PDP decay."""
+    rng = np.random.default_rng(seed)
+    angle_deg = ((angle_center - 15.5) / 15.5) * 55.0
+    angle_rad = np.radians(angle_deg)
+
+    ue_dist = 7.5
+    ue_x = ue_dist * np.sin(angle_rad)
+    ue_y = ue_dist * np.cos(angle_rad)
+
+    fig = make_subplots(
+        rows=1, cols=2,
+        column_widths=[0.54, 0.46],
+        horizontal_spacing=0.12,
+        subplot_titles=(
+            f"Physical Multipath Geometry  (AoA: {angle_deg:+.1f}°, {n_clusters} Clusters)",
+            f"Power Delay Profile  (Decay: {decay_rate:.2f}, Noise σ: {noise_sigma:.2f})"
+        )
+    )
+
+    # Sector coverage boundary (-60 to +60 deg)
+    sec_r = 9.0
+    sec_left_x = sec_r * np.sin(np.radians(-60))
+    sec_left_y = sec_r * np.cos(np.radians(-60))
+    sec_right_x = sec_r * np.sin(np.radians(60))
+    sec_right_y = sec_r * np.cos(np.radians(60))
+
+    fig.add_trace(go.Scatter(
+        x=[sec_left_x, 0, sec_right_x], y=[sec_left_y, 0, sec_right_y],
+        mode="lines", line=dict(color="rgba(148, 163, 184, 0.3)", width=1.5, dash="dash"),
+        name="Sector Boundary (120°)", showlegend=True
+    ), row=1, col=1)
+
+    # Tower (gNodeB)
+    fig.add_trace(go.Scatter(
+        x=[0], y=[0], mode="markers+text",
+        marker=dict(size=15, color="#38BDF8", symbol="triangle-up", line=dict(width=2, color="#0284C7")),
+        text=["Base Station (32 Ant)"], textposition="bottom center",
+        name="Base Station", showlegend=True
+    ), row=1, col=1)
+
+    # Scatterers & Rays
+    scat_x = []
+    scat_y = []
+    for _ in range(n_clusters):
+        r_c = rng.uniform(3.0, 6.8)
+        ang_c = angle_rad + rng.uniform(-0.5, 0.5)
+        cx = r_c * np.sin(ang_c)
+        cy = r_c * np.cos(ang_c)
+        scat_x.append(cx)
+        scat_y.append(cy)
+
+        # Ray: Tower -> Scatterer -> Phone
+        fig.add_trace(go.Scatter(
+            x=[0, cx, ue_x], y=[0, cy, ue_y], mode="lines",
+            line=dict(color="rgba(245, 158, 11, 0.35)", width=1.5, dash="dot"),
+            showlegend=False, hoverinfo="skip"
+        ), row=1, col=1)
+
+    fig.add_trace(go.Scatter(
+        x=scat_x, y=scat_y, mode="markers",
+        marker=dict(size=11, color="#F59E0B", symbol="diamond", line=dict(width=1.5, color="#D97706")),
+        name=f"{n_clusters} Scatterers", showlegend=True
+    ), row=1, col=1)
+
+    # Primary Direct Path Beam
+    fig.add_trace(go.Scatter(
+        x=[0, ue_x], y=[0, ue_y], mode="lines",
+        line=dict(color="#10B981", width=3),
+        name=f"Direct Beam ({angle_deg:+.1f}°)", showlegend=True
+    ), row=1, col=1)
+
+    # UE Phone
+    fig.add_trace(go.Scatter(
+        x=[ue_x], y=[ue_y], mode="markers+text",
+        marker=dict(size=14, color="#10B981", symbol="circle", line=dict(width=2, color="#059669")),
+        text=["Smartphone (UE)"], textposition="top center",
+        name="User Phone (UE)", showlegend=True
+    ), row=1, col=1)
+
+    # Subplot 2: PDP Curve
+    taps = np.arange(32)
+    power = np.exp(-decay_rate * taps)
+    fig.add_trace(go.Scatter(
+        x=taps, y=power, mode="lines+markers",
+        line=dict(color="#C084FC", width=2.5),
+        marker=dict(size=5, color="#E9D5FF"),
+        name="Channel Power P(τ)", showlegend=True
+    ), row=1, col=2)
+
+    if noise_sigma > 0:
+        n_floor = [noise_sigma ** 2] * 32
+        fig.add_trace(go.Scatter(
+            x=taps, y=n_floor, mode="lines",
+            line=dict(color="#EF4444", width=2, dash="dash"),
+            name=f"Noise Floor (σ²={noise_sigma**2:.2f})", showlegend=True
+        ), row=1, col=2)
+
+    # Explicit ranges to guarantee headspace and eliminate edge collisions
+    fig.update_xaxes(
+        title_text="Cross-Range (km)", title_font=dict(color="#CBD5E1", size=11),
+        tickfont=dict(color="#94A3B8", size=10), gridcolor="rgba(148, 163, 184, 0.15)",
+        range=[-9, 9], row=1, col=1
+    )
+    fig.update_yaxes(
+        title_text="Down-Range (km)", title_font=dict(color="#CBD5E1", size=11),
+        tickfont=dict(color="#94A3B8", size=10), gridcolor="rgba(148, 163, 184, 0.15)",
+        range=[-1.5, 10.5], row=1, col=1
+    )
+
+    fig.update_xaxes(
+        title_text="Delay Tap Index (τ = 0..31)", title_font=dict(color="#CBD5E1", size=11),
+        tickfont=dict(color="#94A3B8", size=10), gridcolor="rgba(148, 163, 184, 0.15)",
+        range=[-1, 32], row=1, col=2
+    )
+    fig.update_yaxes(
+        title_text="Relative Power", title_font=dict(color="#CBD5E1", size=11),
+        tickfont=dict(color="#94A3B8", size=10), gridcolor="rgba(148, 163, 184, 0.15)",
+        range=[-0.05, 1.12], row=1, col=2
+    )
+
+    # Force bright contrast on subplot titles in both Light and Dark themes
+    for ann in fig["layout"]["annotations"]:
+        ann["font"] = dict(color="#F8FAFC", size=13, family="Inter, sans-serif")
+
+    # Clean layout with bottom legend and zero title collision
+    fig.update_layout(
+        height=450,
+        margin=dict(l=35, r=35, t=65, b=85),
+        template="plotly_dark",
+        paper_bgcolor="#0F172A",
+        plot_bgcolor="#1E293B",
+        font=dict(color="#F1F5F9", family="Inter, sans-serif", size=11),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.22,
+            xanchor="center",
+            x=0.5,
+            bgcolor="#1E293B",
+            bordercolor="#334155",
+            borderwidth=1,
+            font=dict(color="#F8FAFC", size=11)
+        )
+    )
+    return fig
+
 
 # Professional Industrial / Telecom Lab CSS
 st.html("""
@@ -252,28 +447,76 @@ cr_selected = st.sidebar.select_slider(
 )
 st.sidebar.markdown(f"<div style='font-size:0.75rem; color:#0284C7; font-family:monospace; margin-top:-0.35rem; margin-bottom:1.1rem;'>Payload Reduction: {100*(1-1/cr_selected):.1f}%</div>", unsafe_allow_html=True)
 
-st.sidebar.markdown("<div class='sidebar-title'>Channel Environment Preset</div>", unsafe_allow_html=True)
+st.sidebar.markdown("<div class='sidebar-title'>CSI Input Source</div>", unsafe_allow_html=True)
 
-# Preset scenario buttons with descriptive words
-p_cols = st.sidebar.columns(3)
-if p_cols[0].button("Urban", use_container_width=True, help="Standard urban multipath environment (Sample 42)"):
-    st.session_state["sample_idx"] = 42
-if p_cols[1].button("Dense", use_container_width=True, help="Dense urban rich scattering environment (Sample 105)"):
-    st.session_state["sample_idx"] = 105
-if p_cols[2].button("Rural", use_container_width=True, help="Rural extended multipath delay environment (Sample 250)"):
-    st.session_state["sample_idx"] = 250
-
-if "sample_idx" not in st.session_state:
-    st.session_state["sample_idx"] = 42
-
-sample_idx = st.sidebar.number_input(
-    "Test Channel Index",
-    min_value=0,
-    max_value=max_samples - 1,
-    value=st.session_state["sample_idx"],
-    step=1
+input_mode = st.sidebar.radio(
+    "Select CSI Source",
+    options=["Benchmark Dataset", "Upload .npy File", "Interactive Synthesizer"],
+    index=0,
+    label_visibility="collapsed"
 )
-st.session_state["sample_idx"] = int(sample_idx)
+
+uploaded_file = None
+synth_real = None
+synth_imag = None
+
+if input_mode == "Benchmark Dataset":
+    # Preset scenario buttons with descriptive words
+    p_cols = st.sidebar.columns(3)
+    if p_cols[0].button("Urban", use_container_width=True, help="Standard urban multipath environment (Sample 42)"):
+        st.session_state["sample_idx"] = 42
+    if p_cols[1].button("Dense", use_container_width=True, help="Dense urban rich scattering environment (Sample 105)"):
+        st.session_state["sample_idx"] = 105
+    if p_cols[2].button("Rural", use_container_width=True, help="Rural extended multipath delay environment (Sample 250)"):
+        st.session_state["sample_idx"] = 250
+
+    if "sample_idx" not in st.session_state:
+        st.session_state["sample_idx"] = 42
+
+    sample_idx = st.sidebar.number_input(
+        "Test Channel Index",
+        min_value=0,
+        max_value=max_samples - 1,
+        value=st.session_state["sample_idx"],
+        step=1
+    )
+    st.session_state["sample_idx"] = int(sample_idx)
+
+elif input_mode == "Upload .npy File":
+    uploaded_file = st.sidebar.file_uploader(
+        "Upload CSI Tensor (.npy)",
+        type=["npy"],
+        help="Upload numpy file with shape (2, 32, 32) float32 or (32, 32) complex"
+    )
+    if uploaded_file is not None:
+        try:
+            raw_bytes = uploaded_file.getvalue()
+            test_arr = np.load(io.BytesIO(raw_bytes))
+            st.sidebar.markdown(f"""
+            <div style='background: rgba(2, 132, 199, 0.08); border: 1px solid rgba(2, 132, 199, 0.25); border-radius: 4px; padding: 0.35rem 0.5rem; margin-bottom: 0.5rem;'>
+                <div style='color: #0284C7; font-size: 0.72rem; font-family: monospace;'>PARSED: shape={test_arr.shape}, dtype={test_arr.dtype}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        except Exception as e:
+            st.sidebar.error(f"Invalid .npy file: {e}")
+    else:
+        st.sidebar.info("Upload any external (2, 32, 32) float or (32, 32) complex CSI file.")
+
+else:  # "Interactive Synthesizer"
+    st.sidebar.markdown("<div style='font-size: 0.72rem; color: #94A3B8; margin-bottom: 0.35rem;'>ON-THE-FLY 3GPP PARAMETERS:</div>", unsafe_allow_html=True)
+    n_clusters = st.sidebar.slider("Multipath Clusters", min_value=1, max_value=10, value=5)
+    angle_center = st.sidebar.slider("Angle Center Tap", min_value=0, max_value=31, value=14)
+    decay_rate = st.sidebar.slider("Delay PDP Decay", min_value=0.05, max_value=0.35, value=0.15, step=0.01)
+    noise_sigma = st.sidebar.slider("Additive Noise (sigma)", min_value=0.0, max_value=0.3, value=0.0, step=0.02)
+    synth_seed = st.sidebar.number_input("RNG Seed", min_value=0, max_value=9999, value=42, step=1)
+
+    synth_real, synth_imag = synthesize_channel(
+        n_clusters=n_clusters,
+        angle_center=angle_center,
+        decay_rate=decay_rate,
+        noise_sigma=noise_sigma,
+        seed=int(synth_seed)
+    )
 
 viz_mode = st.sidebar.selectbox(
     "Channel Domain Component",
@@ -287,12 +530,37 @@ execute_clicked = st.sidebar.button("Run Inference", type="primary", use_contain
 
 if backend_online:
     try:
-        payload = {"sample_index": int(st.session_state["sample_idx"]), "compression_ratio": int(cr_selected)}
-        res = requests.post(f"{backend_url}/predict", json=payload, timeout=4)
-        if res.status_code == 200:
-            pred_data = res.json()
-        else:
-            st.sidebar.error(f"Inference error: {res.json().get('detail', res.text)}")
+        if input_mode == "Benchmark Dataset":
+            payload = {
+                "sample_index": int(st.session_state["sample_idx"]),
+                "compression_ratio": int(cr_selected)
+            }
+            res = requests.post(f"{backend_url}/predict", json=payload, timeout=5)
+        elif input_mode == "Upload .npy File":
+            if uploaded_file is not None:
+                files = {"file": (uploaded_file.name, io.BytesIO(uploaded_file.getvalue()), "application/octet-stream")}
+                res = requests.post(
+                    f"{backend_url}/predict/upload?compression_ratio={int(cr_selected)}&auto_normalize=true",
+                    files=files,
+                    timeout=6
+                )
+            else:
+                st.sidebar.warning("Please upload a .npy file to run inference.")
+                res = None
+        else:  # Interactive Synthesizer
+            payload = {
+                "matrix_real": synth_real,
+                "matrix_imag": synth_imag,
+                "compression_ratio": int(cr_selected),
+                "auto_normalize": True
+            }
+            res = requests.post(f"{backend_url}/predict", json=payload, timeout=5)
+
+        if res is not None:
+            if res.status_code == 200:
+                pred_data = res.json()
+            else:
+                st.sidebar.error(f"Inference error: {res.json().get('detail', res.text)}")
     except Exception as e:
         st.sidebar.error(f"API request failed: {e}")
 
@@ -305,6 +573,7 @@ if pred_data:
     latency_ms = pred_data["inference_ms"]
     bf_gain_pct = pred_data.get("beamforming_gain_percent", 99.98)
     bf_loss_db = pred_data.get("beamforming_loss_db", -0.0)
+    source_badge = pred_data.get("input_source", input_mode).upper()
 else:
     overhead_red = (1.0 - (1.0 / cr_selected)) * 100.0
     nmse_db_val = -38.3 if cr_selected == 16 else (-38.5 if cr_selected == 4 else -38.0)
@@ -313,6 +582,7 @@ else:
     latency_ms = 0.11
     bf_gain_pct = 99.98
     bf_loss_db = -0.0
+    source_badge = input_mode.upper()
 
 orig_kb = (orig_scalars * 4) / 1024
 comp_kb = (compressed_dim * 4) / 1024
@@ -324,7 +594,10 @@ arch_html = f"""
 <div class='arch-card'>
     <div class='arch-header'>
         <span>Telemetry & Communication Pipeline</span>
-        <span class='font-mono' style='color:#38BDF8;'>ACTIVE PROFILE: CR={cr_selected}</span>
+        <div>
+            <span class='font-mono' style='color:#A78BFA; margin-right: 0.75rem; font-size: 0.72rem;'>SOURCE: {source_badge}</span>
+            <span class='font-mono' style='color:#38BDF8;'>ACTIVE PROFILE: CR={cr_selected}</span>
+        </div>
     </div>
     <div class='node-container'>
         <!-- Node 1: User Equipment (UE) -->
@@ -415,7 +688,74 @@ st.html(kpi_html)
 # ==============================================================================
 # 3. WORKSPACE TABS: CHANNEL MATRICES & BENCHMARKS
 # ==============================================================================
-tab_matrices, tab_bench = st.tabs(["CSI Matrix Reconstruction", "Benchmark Analysis"])
+tab_physics, tab_matrices, tab_bench = st.tabs([
+    "Channel Physics Visualizer (AoA & PDP)",
+    "CSI Matrix Reconstruction",
+    "Benchmark Analysis"
+])
+
+with tab_physics:
+    st.markdown("### Interactive 3GPP Channel Physics & Propagation Visualizer")
+    st.markdown(
+        "<div style='font-size: 0.85rem; color: #94A3B8; margin-bottom: 1rem;'>"
+        "Adjust the sidebar controls (<b>Multipath Clusters</b>, <b>Angle Center Tap</b>, <b>Delay PDP Decay</b>, <b>Noise</b>) "
+        "to see the 32-Tx base station antenna beam, multipath scatterer obstacles, and power decay curve update dynamically in real time."
+        "</div>",
+        unsafe_allow_html=True
+    )
+
+    v_clusters = n_clusters if input_mode == "Interactive Synthesizer" else 5
+    v_angle = angle_center if input_mode == "Interactive Synthesizer" else 14
+    v_decay = decay_rate if input_mode == "Interactive Synthesizer" else 0.15
+    v_noise = noise_sigma if input_mode == "Interactive Synthesizer" else 0.0
+    v_seed = int(synth_seed) if input_mode == "Interactive Synthesizer" else 42
+
+    phys_fig = build_physics_visual(
+        n_clusters=v_clusters,
+        angle_center=v_angle,
+        decay_rate=v_decay,
+        noise_sigma=v_noise,
+        seed=v_seed
+    )
+    st.plotly_chart(phys_fig, use_container_width=True)
+
+    angle_calc = ((v_angle - 15.5) / 15.5) * 55.0
+    snr_desc = "Clean (Inf dB)" if v_noise == 0 else f"+{10*np.log10(1.0/(v_noise**2 + 1e-10)):.1f} dB"
+
+    st.markdown(f"""
+    <div style='display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.75rem; margin-top: 0.5rem; margin-bottom: 1.25rem;'>
+        <div style='background: #1E293B; border: 1px solid #334155; border-radius: 6px; padding: 0.75rem;'>
+            <div style='color: #94A3B8; font-size: 0.7rem; text-transform: uppercase; font-family: monospace;'>Angle of Arrival (AoA)</div>
+            <div style='color: #38BDF8; font-size: 1.15rem; font-weight: 700; font-family: monospace;'>{angle_calc:+.1f}°</div>
+            <div style='color: #64748B; font-size: 0.72rem;'>Antenna Beam Index {v_angle} / 31</div>
+        </div>
+        <div style='background: #1E293B; border: 1px solid #334155; border-radius: 6px; padding: 0.75rem;'>
+            <div style='color: #94A3B8; font-size: 0.7rem; text-transform: uppercase; font-family: monospace;'>Multipath Clusters</div>
+            <div style='color: #F59E0B; font-size: 1.15rem; font-weight: 700; font-family: monospace;'>{v_clusters} Bouncing Paths</div>
+            <div style='color: #64748B; font-size: 0.72rem;'>Scattering Obstacles in Sector</div>
+        </div>
+        <div style='background: #1E293B; border: 1px solid #334155; border-radius: 6px; padding: 0.75rem;'>
+            <div style='color: #94A3B8; font-size: 0.7rem; text-transform: uppercase; font-family: monospace;'>Delay PDP Decay Rate</div>
+            <div style='color: #C084FC; font-size: 1.15rem; font-weight: 700; font-family: monospace;'>{v_decay:.2f} / tap</div>
+            <div style='color: #64748B; font-size: 0.72rem;'>RMS Delay: ~{1.0/v_decay:.1f} taps</div>
+        </div>
+        <div style='background: #1E293B; border: 1px solid #334155; border-radius: 6px; padding: 0.75rem;'>
+            <div style='color: #94A3B8; font-size: 0.7rem; text-transform: uppercase; font-family: monospace;'>Additive Noise & SNR</div>
+            <div style='color: {"#10B981" if v_noise == 0 else "#EF4444"}; font-size: 1.15rem; font-weight: 700; font-family: monospace;'>{snr_desc}</div>
+            <div style='color: #64748B; font-size: 0.72rem;'>Sigma σ = {v_noise:.2f} | Seed {v_seed}</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <div style='background: #0F172A; border: 1px solid #1E293B; border-radius: 6px; padding: 0.85rem; font-size: 0.8rem; color: #94A3B8; line-height: 1.5;'>
+        <b style='color: #F1F5F9;'>Physical Parameter Guide:</b><br/>
+        • <b>Angle Center Tap:</b> Steers the primary transmitter beam towards the user's angular bearing across the sector (spanning -55° to +55°).<br/>
+        • <b>Multipath Clusters:</b> Represents physical reflection objects (buildings, trees, ground) that bounce signals to the phone with random phase delays.<br/>
+        • <b>Delay PDP Decay:</b> Governs exponential power loss over time. High decay concentrates power in early delay taps; low decay models long reverberation.<br/>
+        • <b>Additive Noise (σ):</b> Simulates receiver thermal noise and co-channel interference to evaluate AI compression robustness.
+    </div>
+    """, unsafe_allow_html=True)
 
 with tab_matrices:
     if pred_data:
