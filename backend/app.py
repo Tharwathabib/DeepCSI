@@ -19,7 +19,7 @@ if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
 from models.csi_autoencoder import CSIAutoencoder
-from utils.metrics import beamforming_gain_numpy, beamforming_loss_db, nmse_db
+from utils.metrics import beamforming_gain_numpy, beamforming_loss_db, nmse_db_aggregate
 
 # Global in-memory storage for test dataset, normalization metadata, and loaded models
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -56,12 +56,18 @@ def load_resources():
         weight_path = weights_dir / f"deepcsi_cr{cr}.pt"
         if weight_path.exists():
             try:
-                model = CSIAutoencoder(compression_ratio=cr).to(DEVICE)
-                checkpoint = torch.load(weight_path, map_location=DEVICE)
+                checkpoint = torch.load(weight_path, map_location=DEVICE, weights_only=False)
+                # Rebuild with the architecture the checkpoint was trained with;
+                # decoder RefineNet width is configurable, so assuming the default
+                # breaks load_state_dict for any non-default checkpoint.
+                refine_widths = tuple(checkpoint.get("refine_widths", (8, 16)))
+                model = CSIAutoencoder(compression_ratio=cr, refine_widths=refine_widths).to(DEVICE)
                 model.load_state_dict(checkpoint["model_state_dict"])
                 model.eval()
                 LOADED_MODELS[cr] = model
-                print(f"[Backend Startup] Loaded model weight for CR={cr} on {DEVICE}")
+                source = checkpoint.get("data_source", "unknown")
+                print(f"[Backend Startup] Loaded model weight for CR={cr} on {DEVICE} "
+                      f"(trained on: {source})")
             except Exception as e:
                 print(f"[Backend Startup Error] Failed loading CR={cr} model: {e}")
 
@@ -172,10 +178,13 @@ def run_model_inference(sample_np: np.ndarray, compression_ratio: int):
         torch.cuda.synchronize()
     inference_ms = (time.time() - start_time) * 1000.0
 
-    nmse_val = float(nmse_db(recon_tensor, sample_tensor).item())
+    # Both metrics are measured on the de-offset complex channel. Without
+    # NORM_PARAMS the DC component of [0,1]-normalised data dominates the signal
+    # power, inflating NMSE by ~35 dB and pinning the beamforming gain near 100%.
+    nmse_val = float(nmse_db_aggregate(recon_tensor, sample_tensor, NORM_PARAMS).item())
     recon_np = recon_tensor.squeeze(0).cpu().numpy()
 
-    bf_gain_val = float(beamforming_gain_numpy(recon_np, sample_np))
+    bf_gain_val = float(beamforming_gain_numpy(recon_np, sample_np, norm_params=NORM_PARAMS))
     bf_loss_val = float(beamforming_loss_db(bf_gain_val))
 
     return recon_np, inference_ms, nmse_val, bf_gain_val, bf_loss_val, model.latent_dim

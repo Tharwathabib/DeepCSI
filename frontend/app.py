@@ -376,6 +376,11 @@ st.html("""
         font-weight: 600;
     }
 
+    .status-fail {
+        color: #F87171;
+        font-weight: 600;
+    }
+
     /* Sidebar Clean styling */
     .sidebar-section {
         margin-bottom: 1.5rem;
@@ -571,18 +576,49 @@ if pred_data:
     orig_scalars = pred_data["original_scalars"]
     compressed_dim = pred_data["compressed_dim"]
     latency_ms = pred_data["inference_ms"]
-    bf_gain_pct = pred_data.get("beamforming_gain_percent", 99.98)
-    bf_loss_db = pred_data.get("beamforming_loss_db", -0.0)
+    bf_gain_pct = pred_data.get("beamforming_gain_percent")
+    bf_loss_db = pred_data.get("beamforming_loss_db")
     source_badge = pred_data.get("input_source", input_mode).upper()
 else:
+    # No inference has run. Only the values that follow from the compression
+    # ratio alone are known; every measured quantity stays None and renders as
+    # a dash. Never substitute placeholder numbers here -- a dashboard showing
+    # plausible-looking NMSE with no model loaded is a live-demo hazard.
     overhead_red = (1.0 - (1.0 / cr_selected)) * 100.0
-    nmse_db_val = -38.3 if cr_selected == 16 else (-38.5 if cr_selected == 4 else -38.0)
+    nmse_db_val = None
     orig_scalars = 2048
     compressed_dim = 2048 // cr_selected
-    latency_ms = 0.11
-    bf_gain_pct = 99.98
-    bf_loss_db = -0.0
+    latency_ms = None
+    bf_gain_pct = None
+    bf_loss_db = None
     source_badge = input_mode.upper()
+
+
+def fmt_metric(value, spec: str, dash: str = "&mdash;") -> str:
+    """Format a measured value, or a dash when nothing has been measured yet."""
+    return dash if value is None else format(value, spec)
+
+
+nmse_str = fmt_metric(nmse_db_val, ".1f")
+bf_gain_str = fmt_metric(bf_gain_pct, ".2f")
+bf_loss_str = fmt_metric(bf_loss_db, ".2f")
+latency_str = fmt_metric(latency_ms, ".2f")
+
+# The pass/fail badge must reflect the measured gain rather than asserting PASS
+# unconditionally, which it did previously even with no model loaded.
+if bf_gain_pct is None:
+    bf_status_class, bf_status_text = "", "awaiting inference"
+elif bf_gain_pct >= 90.0:
+    bf_status_class, bf_status_text = "status-pass", "PASS &ge; 90%"
+else:
+    bf_status_class, bf_status_text = "status-fail", "below 90% target"
+
+if nmse_db_val is None:
+    nmse_status_class, nmse_status_text = "", "awaiting inference"
+elif nmse_db_val <= -15.0:
+    nmse_status_class, nmse_status_text = "status-pass", "PASS (target &le; -15.0 dB)"
+else:
+    nmse_status_class, nmse_status_text = "status-fail", "above -15.0 dB target"
 
 orig_kb = (orig_scalars * 4) / 1024
 comp_kb = (compressed_dim * 4) / 1024
@@ -627,7 +663,7 @@ arch_html = f"""
                 <div class='font-mono' style='font-size: 0.72rem; color: #94A3B8;'>{comp_kb:.2f} KB / channel sample</div>
             </div>
             <div style='display: flex; justify-content: space-between; font-size: 0.7rem; color: #64748B; font-family: monospace;'>
-                <span>Delay: {latency_ms:.2f} ms</span>
+                <span>Delay: {latency_str} ms</span>
                 <span>Subcarrier: 256</span>
             </div>
         </div>
@@ -642,8 +678,8 @@ arch_html = f"""
             <table class='spec-table'>
                 <tr><td>Decoder Arch</td><td class='val'>2× ResBlocks</td></tr>
                 <tr><td>Reconstructed Dim</td><td class='val'>32 × 32 complex</td></tr>
-                <tr><td>Verification NMSE</td><td class='val' style='color:#10B981;'>{nmse_db_val:.1f} dB</td></tr>
-                <tr><td>MRT Beamforming</td><td class='val' style='color:#38BDF8;'>{bf_gain_pct:.2f}% ({bf_loss_db:.2f} dB)</td></tr>
+                <tr><td>Verification NMSE</td><td class='val' style='color:#10B981;'>{nmse_str} dB</td></tr>
+                <tr><td>MRT Beamforming</td><td class='val' style='color:#38BDF8;'>{bf_gain_str}% ({bf_loss_str} dB)</td></tr>
             </table>
         </div>
     </div>
@@ -663,13 +699,13 @@ kpi_html = f"""
     </div>
     <div class='metric-panel'>
         <div class='metric-title'>Reconstruction NMSE</div>
-        <div class='metric-value' style='color:#10B981;'>{nmse_db_val:.1f} dB</div>
-        <div class='metric-footer status-pass'>PASS (Target &le; -15.0 dB)</div>
+        <div class='metric-value' style='color:#10B981;'>{nmse_str} dB</div>
+        <div class='metric-footer {nmse_status_class}'>{nmse_status_text}</div>
     </div>
     <div class='metric-panel'>
         <div class='metric-title'>Downstream MRT Gain</div>
-        <div class='metric-value' style='color:#38BDF8;'>{bf_gain_pct:.2f}%</div>
-        <div class='metric-footer status-pass'>{bf_loss_db:.2f} dB loss (PASS &ge; 90%)</div>
+        <div class='metric-value' style='color:#38BDF8;'>{bf_gain_str}%</div>
+        <div class='metric-footer {bf_status_class}'>{bf_loss_str} dB loss ({bf_status_text})</div>
     </div>
     <div class='metric-panel'>
         <div class='metric-title'>Payload Comparison</div>
@@ -678,7 +714,7 @@ kpi_html = f"""
     </div>
     <div class='metric-panel'>
         <div class='metric-title'>Inference Latency</div>
-        <div class='metric-value'>{latency_ms:.2f} <span style='font-size:0.85rem; color:#64748B;'>ms</span></div>
+        <div class='metric-value'>{latency_str} <span style='font-size:0.85rem; color:#64748B;'>ms</span></div>
         <div class='metric-footer'>Per-sample evaluation</div>
     </div>
 </div>
@@ -913,8 +949,10 @@ with tab_bench:
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                 )
             else:
-                deep_gains = (df_deep["beamforming_gain_mean"] * 100.0) if "beamforming_gain_mean" in df_deep else [99.98, 99.98, 99.98]
-                dct_gains = (df_dct["beamforming_gain_mean"] * 100.0) if "beamforming_gain_mean" in df_dct else [100.0, 99.99, 99.99]
+                # No placeholder gains: if the column is absent the metrics file
+                # predates the beamforming metric and there is nothing to plot.
+                deep_gains = (df_deep["beamforming_gain_mean"] * 100.0) if "beamforming_gain_mean" in df_deep else []
+                dct_gains = (df_dct["beamforming_gain_mean"] * 100.0) if "beamforming_gain_mean" in df_dct else []
 
                 fig_bar.add_trace(go.Bar(
                     name="DeepCSI MRT Power",
