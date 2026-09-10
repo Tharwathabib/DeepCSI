@@ -16,7 +16,7 @@ if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
 from utils.seed import set_seed
-from utils.metrics import nmse_db, offset_from_norm_params
+from utils.metrics import offset_from_norm_params
 from models.csi_autoencoder import CSIAutoencoder
 
 
@@ -44,13 +44,14 @@ def run_epoch(model, dataloader, criterion, device, optimizer=None, scaler=None,
     """
     Run one epoch. Trains when an optimizer is supplied, otherwise evaluates.
 
-    Returns (avg_loss, mean_of_logs_nmse_db, aggregate_nmse_db).
+    Returns (avg_loss, nmse_db) where nmse_db uses the de-offset channel and the
+    log-of-mean convention -- the only NMSE this script reports, so that no
+    inflated figure is ever written where someone might quote it.
     """
     training = optimizer is not None
     model.train() if training else model.eval()
 
     total_loss = 0.0
-    total_nmse = 0.0
     total_ratio = 0.0
     n_samples = len(dataloader.dataset)
 
@@ -77,15 +78,12 @@ def run_epoch(model, dataloader, criterion, device, optimizer=None, scaler=None,
                 optimizer.step()
 
         with torch.no_grad():
-            recon_f = recon.float()
             total_loss += loss.item() * len(batch_x)
-            total_nmse += nmse_db(recon_f, batch_x).item() * len(batch_x)
-            total_ratio += nmse_ratio_sum(recon_f, batch_x, offset).item()
+            total_ratio += nmse_ratio_sum(recon.float(), batch_x, offset).item()
 
     avg_loss = total_loss / n_samples
-    avg_nmse = total_nmse / n_samples
     aggregate_nmse = 10.0 * np.log10(total_ratio / n_samples + 1e-12)
-    return avg_loss, avg_nmse, float(aggregate_nmse)
+    return avg_loss, float(aggregate_nmse)
 
 
 def main():
@@ -192,8 +190,8 @@ def main():
     log_file = open(log_path, "w", newline="")
     log_writer = csv.writer(log_file)
     log_writer.writerow([
-        "epoch", "train_loss", "train_nmse_db", "train_nmse_db_aggregate",
-        "val_loss", "val_nmse_db", "val_nmse_db_aggregate", "lr", "elapsed_s",
+        "epoch", "train_loss", "train_nmse_db",
+        "val_loss", "val_nmse_db", "lr", "elapsed_s",
     ])
 
     best_val_nmse = float("inf")
@@ -202,23 +200,22 @@ def main():
     start_time = time.time()
 
     for epoch in range(1, args.epochs + 1):
-        train_loss, train_nmse, train_agg = run_epoch(
+        train_loss, train_nmse = run_epoch(
             model, train_loader, criterion, device,
             optimizer=optimizer, scaler=scaler, offset=offset
         )
-        val_loss, val_nmse, val_agg = run_epoch(
+        val_loss, val_nmse = run_epoch(
             model, val_loader, criterion, device, offset=offset
         )
 
-        # Select and schedule on the de-offset aggregate NMSE -- the quantity we
-        # actually report and the one comparable to published results.
-        scheduler.step(val_agg)
+        # Select and schedule on the same quantity we report.
+        scheduler.step(val_nmse)
         current_lr = optimizer.param_groups[0]["lr"]
         elapsed = time.time() - start_time
 
         marker = ""
-        if val_agg < best_val_nmse:
-            best_val_nmse = val_agg
+        if val_nmse < best_val_nmse:
+            best_val_nmse = val_nmse
             best_epoch = epoch
             epochs_since_improvement = 0
             marker = "  *"
@@ -229,7 +226,6 @@ def main():
                 "refine_widths": tuple(args.refine_widths),
                 "epoch": epoch,
                 "val_nmse_db": val_nmse,
-                "val_nmse_db_aggregate": val_agg,
                 "data_source": (norm_params or {}).get("source", "unknown"),
                 "norm_params": norm_params,
                 "config": vars(args),
@@ -239,13 +235,13 @@ def main():
             epochs_since_improvement += 1
 
         print(f"Epoch {epoch:02d}/{args.epochs:02d} | "
-              f"Train NMSE {train_agg:7.2f} dB | "
-              f"Val NMSE {val_agg:7.2f} dB | "
+              f"Train NMSE {train_nmse:7.2f} dB | "
+              f"Val NMSE {val_nmse:7.2f} dB | "
               f"LR {current_lr:.2e}{marker}")
 
         log_writer.writerow([
-            epoch, f"{train_loss:.8f}", f"{train_nmse:.4f}", f"{train_agg:.4f}",
-            f"{val_loss:.8f}", f"{val_nmse:.4f}", f"{val_agg:.4f}",
+            epoch, f"{train_loss:.8f}", f"{train_nmse:.4f}",
+            f"{val_loss:.8f}", f"{val_nmse:.4f}",
             f"{current_lr:.8f}", f"{elapsed:.1f}",
         ])
         log_file.flush()

@@ -12,7 +12,9 @@
 
 In FDD systems, the gNodeB requires explicit downlink CSI feedback from the User Equipment (UE) to construct precoding matrices. For a 32-antenna, 256-subcarrier massive MIMO array, raw spatial-frequency CSI consists of $32 \times 256 = 8192$ complex coefficients ($16,384$ float32 values $\approx 64 \text{ KiB}$).
 
-By exploiting angular-delay domain sparsity, truncating delay taps to $32 \times 32$, and deploying CNN-based autoencoders, **DeepCSI** achieves up to **$96.875\%$ scalar dimension reduction** while maintaining high reconstruction fidelity ($\text{NMSE} \le -15 \text{ dB}$).
+By exploiting angular-delay domain sparsity, truncating delay taps to $32 \times 32$, and deploying CNN-based autoencoders, **DeepCSI** achieves up to **$96.875\%$ scalar dimension reduction**, outperforming a classical 2D-DCT baseline at every compression ratio tested by an increasing margin as the feedback budget shrinks.
+
+The original $-15\text{ dB}$ NMSE target is **not** met on the current synthetic dataset — the best measured result is $-11.22\text{ dB}$ at CR=4. See Key Performance Indicators below for the measured figures and the reasons.
 
 ```text
 UE / Channel Estimator
@@ -44,13 +46,29 @@ Reconstructed CSI  ──>  Inverse 2D FFT  ──>  Downlink Precoding
 
 ## Key Performance Indicators
 
-| Compression Ratio (CR) | Retained Scalars | Scalar Reduction | DeepCSI NMSE | DeepCSI MRT Beamforming Gain | DCT Baseline NMSE | DCT MRT Beamforming Gain |
-| :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **CR = 4** | 512 | **75.00%** | -38.45 dB | **99.98%** (-0.00 dB) | -49.52 dB | 100.00% (-0.00 dB) |
-| **CR = 16** | 128 | **93.75%** | -38.17 dB | **99.98%** (-0.00 dB) | -42.52 dB | 99.99% (-0.00 dB) |
-| **CR = 32** | 64 | **96.88%** | -37.82 dB | **99.98%** (-0.00 dB) | -40.92 dB | 99.99% (-0.00 dB) |
+Measured on the 2,000-sample synthetic test set, 90 training epochs per model.
+Reproduce with `python data/generate_data.py && python models/train.py -cr {4,16,32} --epochs 90 --patience 25 && python models/evaluate.py`.
 
-*Downstream validation note: DeepCSI evaluates both reconstruction error (NMSE) and downstream communication utility via Normalized Maximum Ratio Transmission (MRT) Beamforming Gain $G = \frac{|\hat{\mathbf{h}}^H \mathbf{h}|^2}{\|\hat{\mathbf{h}}\|^2 \|\mathbf{h}\|^2}$. At $\text{CR}=16$ (93.75% scalar reduction), the compressed feedback retains **99.98% of maximum beamforming power**, losing less than $0.01\text{ dB}$ of effective received SNR.*
+| Compression Ratio (CR) | Retained Scalars | Scalar Reduction | DeepCSI NMSE | DeepCSI MRT Gain | DCT Baseline NMSE | DCT MRT Gain |
+| :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **CR = 4** | 512 | **75.00%** | **-11.22 dB** | **93.31%** (-0.30 dB) | -10.92 dB | 91.97% (-0.36 dB) |
+| **CR = 16** | 128 | **93.75%** | **-8.48 dB** | **86.99%** (-0.61 dB) | -4.06 dB | 61.48% (-2.11 dB) |
+| **CR = 32** | 64 | **96.88%** | **-5.31 dB** | **73.29%** (-1.35 dB) | -2.46 dB | 44.41% (-3.52 dB) |
+
+**DeepCSI beats the classical DCT baseline at every compression ratio, and its
+advantage widens as the feedback budget tightens** — +0.3 dB at CR=4, but
++4.4 dB at CR=16 and +2.9 dB at CR=32. In beamforming terms that is the
+difference between retaining 87% and 61% of maximum MRT power at CR=16. This is
+the expected signature of learned compression: when 512 of 2048 scalars survive,
+a fixed transform is nearly sufficient; at 64 scalars, knowing the channel
+distribution is what matters.
+
+*Metric definitions: NMSE is $10\log_{10}\left(\mathbb{E}\left[\|\mathbf{h}-\hat{\mathbf{h}}\|^2 / \|\mathbf{h}\|^2\right]\right)$ and MRT beamforming gain is $G = \frac{|\hat{\mathbf{h}}^H \mathbf{h}|^2}{\|\hat{\mathbf{h}}\|^2 \|\mathbf{h}\|^2}$. Both are computed on the **de-offset complex channel**, i.e. after removing the constant that maps zero to 0.5 in the normalized tensor. Measuring them on the raw $[0,1]$ tensor instead inflates NMSE by roughly 35 dB and saturates $G$ near 100% for any model — see `REAL_DATA.md`.*
+
+> **Scope:** these numbers come from the synthetic 3GPP-*inspired* generator, not
+> a validated channel model, so they are **not comparable to published results**
+> and should not be quoted as such. The COST2100 track in `REAL_DATA.md` exists
+> to produce numbers that are; it is blocked only on the dataset download.
 
 *Scalar accounting note: DeepCSI compresses the $2 \times 32 \times 32 = 2048$ scalar angular-delay representation down to $128$ float32 latent values at $\text{CR}=16$, representing a $93.75\%$ reduction in uplink feedback scalar dimension.*
 
