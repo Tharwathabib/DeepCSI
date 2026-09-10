@@ -66,6 +66,41 @@ beats published neural methods, which is the expected relationship.
 
 ---
 
+## 4. The synthetic generator's normalisation prevented learning
+
+Once the metrics were honest, the synthetic path scored **+0.72 dB at CR=4** —
+worse than transmitting nothing. Not a metric artifact this time; a real defect
+in `data/generate_data.py`.
+
+Global min-max took its range from a handful of rare cluster peaks
+(raw min/max `−3.43 / +4.15`), squashing everything else:
+
+```
+98.1% of pixels within +/-0.01 of the zero point
+std = 0.0066  ->  the data used ~4% of the [0,1] range
+```
+
+The autoencoder minimised MSE by collapsing to the mean — its reconstruction std
+was 27% of the target's. Meanwhile a DCT baseline needing no training at all
+scored −10.73 dB on the same data, proving the data was compressible and the
+representation was the problem.
+
+`normalize_robust()` now sets the scale from a high quantile of `|h|` and clips
+the outliers beyond it, which is how the released COST2100 data is prepared:
+
+```
+x = clip(h / (2S) + 0.5, 0, 1),   S = quantile(|h|, 0.9995)
+```
+
+std rose 0.0066 → 0.0239 (3.6×) while clipping only 0.05% of values, and CR=4
+went **+0.72 dB → −11.36 dB**. The recorded `min`/`max` of `−S`/`+S` make the
+existing affine denormalisation reduce to exactly `(x − 0.5) · 2S`, so the
+metrics and backend treat synthetic and COST2100 data identically.
+
+`--norm-mode minmax` still reproduces the old behaviour if anyone needs it.
+
+---
+
 ## What changed
 
 | File | Change |
