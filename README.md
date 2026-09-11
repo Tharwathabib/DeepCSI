@@ -14,7 +14,7 @@ In FDD systems, the gNodeB requires explicit downlink CSI feedback from the User
 
 By exploiting angular-delay domain sparsity, truncating delay taps to $32 \times 32$, and deploying CNN-based autoencoders, **DeepCSI** achieves up to **$96.875\%$ scalar dimension reduction**, outperforming a classical 2D-DCT baseline at every compression ratio tested by an increasing margin as the feedback budget shrinks.
 
-The original $-15\text{ dB}$ NMSE target is **not** met on the current synthetic dataset — the best measured result is $-11.22\text{ dB}$ at CR=4. See Key Performance Indicators below for the measured figures and the reasons.
+The original $-15\text{ dB}$ NMSE target **is met on real ray-traced data**: $-15.14\text{ dB}$ at CR=4 on DeepMIMO. On the synthetic generator the best measured result is $-11.22\text{ dB}$. See Key Performance Indicators below for both.
 
 ```text
 UE / Channel Estimator
@@ -62,6 +62,47 @@ difference between retaining 87% and 61% of maximum MRT power at CR=16. This is
 the expected signature of learned compression: when 512 of 2048 scalars survive,
 a fixed transform is nearly sufficient; at 64 scalars, knowing the channel
 distribution is what matters.
+
+### Results on real ray-traced data (DeepMIMO)
+
+The headline numbers. Measured on a 12,000-sample held-out test set from
+DeepMIMO scenario O1 at 3.5 GHz, pooled across four base-station / user-grid
+pairs, 42,000 training samples, 60 epochs per model.
+
+Reproduce with:
+```bash
+python data/prepare_deepmimo.py --output-dir data/processed_deepmimo
+python models/train.py --data-dir data/processed_deepmimo -cr {4,16,32} \
+    --epochs 60 --loss nmse --weight-decay 0 --output-dir models/weights_deepmimo
+python models/evaluate.py --data-dir data/processed_deepmimo \
+    --weights-dir models/weights_deepmimo --results-dir results_deepmimo
+```
+
+| CR | Retained | **DeepCSI** | PCA / KLT | 2D DCT | ρ | MRT gain |
+| :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **4** | 512 | **-15.14 dB** | **-17.00 dB** | -6.37 dB | 0.9859 | 97.20% |
+| **16** | 128 | **-12.35 dB** | -4.43 dB | -1.80 dB | 0.9719 | 94.48% |
+| **32** | 64 | **-9.87 dB** | -2.36 dB | -0.95 dB | 0.9497 | 90.25% |
+
+**PCA (KLT) is the baseline that matters**, not DCT. A linear autoencoder with
+$k$ components is the *optimal* linear compressor under MSE, and unlike DCT it
+learns its basis from training data and sends a fixed $k$ numbers — exactly the
+payload shape of the autoencoder's latent vector. DCT is credited with $K$
+coefficients without paying the ~11 bits each to say *which* $K$ it kept.
+
+Against that stronger bar, DeepCSI wins by **7.9 dB at CR=16** and **7.5 dB at
+CR=32** — and **loses by 1.9 dB at CR=4**. The loss is structural rather than a
+tuning failure: this dataset's angular-delay tensor has an intrinsic rank of
+291 (90% of variance) out of 2048, so a latent of 512 is *not* a bottleneck and
+PCA is performing near-lossless linear reconstruction. Where the latent
+genuinely binds, the nonlinear model is far ahead. That crossover is the honest
+version of the "learned compression wins when the budget is tight" claim.
+
+> **Not comparable to published CsiNet/CRNet numbers.** Those are measured on
+> COST2100 indoor; this is DeepMIMO O1 outdoor. The CR=16 and CR=32 figures
+> here exceed the published ones, but on a different and evidently easier
+> benchmark at high compression — it is a different channel model, not a better
+> model. A like-for-like comparison needs COST2100, which was never obtained.
 
 *Metric definitions: NMSE is $10\log_{10}\left(\mathbb{E}\left[\|\mathbf{h}-\hat{\mathbf{h}}\|^2 / \|\mathbf{h}\|^2\right]\right)$ and MRT beamforming gain is $G = \frac{|\hat{\mathbf{h}}^H \mathbf{h}|^2}{\|\hat{\mathbf{h}}\|^2 \|\mathbf{h}\|^2}$. Both are computed on the **de-offset complex channel**, i.e. after removing the constant that maps zero to 0.5 in the normalized tensor. Measuring them on the raw $[0,1]$ tensor instead inflates NMSE by roughly 35 dB and saturates $G$ near 100% for any model — see `REAL_DATA.md`.*
 
