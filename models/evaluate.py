@@ -170,8 +170,13 @@ def generate_plots(df_combined, sample_orig, sample_recon_cr16, sample_dct_cr16,
     df_deepcsi = df_combined[df_combined["method"] == "DeepCSI"]
     df_dct = df_combined[df_combined["method"] == "DCT Baseline"]
 
-    plt.plot(df_deepcsi["compression_ratio"], df_deepcsi["nmse_db_mean"], "o-", color="#1f77b4", linewidth=2.5, label="DeepCSI Autoencoder")
-    plt.plot(df_dct["compression_ratio"], df_dct["nmse_db_mean"], "s--", color="#ff7f0e", linewidth=2.5, label="2D DCT Baseline")
+    # Plot the same NMSE the results table and README quote -- the log-of-mean
+    # aggregate. Plotting nmse_db_mean here instead would put a different number
+    # on the figure than in the text, differing by more than a dB.
+    nmse_col = "nmse_db_aggregate" if "nmse_db_aggregate" in df_combined else "nmse_db_mean"
+
+    plt.plot(df_deepcsi["compression_ratio"], df_deepcsi[nmse_col], "o-", color="#1f77b4", linewidth=2.5, label="DeepCSI Autoencoder")
+    plt.plot(df_dct["compression_ratio"], df_dct[nmse_col], "s--", color="#ff7f0e", linewidth=2.5, label="2D DCT Baseline")
 
     plt.axhline(-15, color="red", linestyle=":", label="Target Requirement (-15 dB)")
     plt.title("NMSE vs Compression Ratio (CR)", fontsize=14, fontweight="bold")

@@ -27,11 +27,17 @@ deepmimo_scenarios/
 models/weights/*.pt
 !models/weights/.gitkeep
 
-# Results
-results/*.csv
-results/figures/*.png
+# Results. Everything under results/ is generated -- metrics, per-epoch logs,
+# figures, ablation sweeps, per-dataset subdirectories. Ignore the lot rather
+# than enumerating extensions, so new output directories do not silently show
+# up as untracked.
+results/**
 !results/.gitkeep
 !results/figures/.gitkeep
+
+# Weights for the alternate dataset tracks
+models/weights_deepmimo/
+models/weights_cost2100/
 
 # IDE / OS
 .vscode/
