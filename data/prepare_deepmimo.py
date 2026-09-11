@@ -189,7 +189,22 @@ def main():
     parser.add_argument("--output-dir", default="data/processed_deepmimo")
     parser.add_argument("--samples", type=int, default=40000, help="Users to sample.")
     parser.add_argument("--tx-set", type=int, default=5, help="Base station TX set id.")
-    parser.add_argument("--rx-set", type=int, default=0, help="User grid RX set id.")
+    # RX set 2 (grid RX_3), not 0. The choice decides whether the data is
+    # learnable at all. Measured angular-delay energy concentration, median over
+    # 1500 users, against the synthetic set that trains to -11 dB:
+    #
+    #   config          top-1 bin   top-10 bins   bins for 90%   users with a path
+    #   TX5/RX0            54.9%        93.4%            7            100%
+    #   TX15/RX0           39.0%        87.0%           14             42%
+    #   TX5/RX2            35.9%        84.8%           18             61%
+    #   synthetic ref      24.5%        84.8%           13              --
+    #
+    # RX0 is LoS-dominated: half the channel energy sits in a single bin of
+    # 1024, and training on it collapses to the mean at ~0 dB -- the model
+    # cannot find one needle in a haystack from an MSE gradient. RX2 has the
+    # richer scattering the architecture was designed for, at the cost of
+    # discarding the ~39% of receivers with no ray-traced path.
+    parser.add_argument("--rx-set", type=int, default=2, help="User grid RX set id.")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 

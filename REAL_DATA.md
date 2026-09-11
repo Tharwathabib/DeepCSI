@@ -185,6 +185,67 @@ python models/train.py --data-dir data/processed_deepmimo --compression-ratio 4
 
 ---
 
+## Model selection: what the ablation actually said
+
+The training logs show the models **overfit** at every compression ratio, and
+the gap widens with capacity (−3.63 dB at CR=4, −2.16 at CR=32). So a bigger or
+deeper model is the wrong move; four changes aimed at generalisation were tried
+instead, each behind a flag defaulting to existing behaviour.
+
+`python models/ablation.py --compression-ratio 16 --epochs 50`
+
+| variant | val NMSE | train/val gap | vs baseline |
+|---|---:|---:|---:|
+| **augment** | **−7.85 dB** | **−0.06** | **−0.22** ✅ |
+| baseline | −7.63 dB | −0.62 | — |
+| crnet_encoder | −7.05 dB | −0.30 | +0.58 ❌ |
+| cosine_lr | −6.05 dB | −1.05 | +1.58 ❌ |
+| nmse_loss | −5.20 dB | −0.23 | +2.43 ❌ |
+| all_combined | −2.06 dB | +0.02 | **+5.57** ❌❌ |
+
+**Only augmentation helped**, and it worked for the predicted reason: it
+collapsed the generalisation gap from −0.62 to −0.06 dB. Three plausible,
+literature-backed ideas made things worse, and **shipping all four together
+would have cost 5.57 dB** while giving no way to identify the culprit.
+
+Caveat on the sweep: at 50 epochs the baseline gap is only −0.62 dB, whereas the
+overfitting that motivated these changes appeared at 90 epochs (−2.28 dB). The
+generalisation-oriented options are therefore being judged in a regime that is
+not yet strongly overfitting, and `augment` in particular may look better still
+at full length.
+
+The recipe in use is **baseline + `--augment`**.
+
+---
+
+## Choosing the DeepMIMO base station and user grid
+
+Which transmitter and receiver grid you pick decides whether the data is
+learnable at all, and this is not obvious up front.
+
+Median angular-delay energy concentration over 1500 users:
+
+| config | top-1 bin | top-10 bins | bins for 90% | users with a path |
+|---|---:|---:|---:|---:|
+| TX5 / RX0 | 54.9% | 93.4% | **7** | 100% |
+| TX15 / RX0 | 39.0% | 87.0% | 14 | 42% |
+| **TX5 / RX2** | **35.9%** | **84.8%** | **18** | 61% |
+| *synthetic reference* | *24.5%* | *84.8%* | *13* | — |
+
+RX0 is a line-of-sight-dominated street grid: **half the channel energy sits in
+a single bin out of 1024**. Training on it collapses to the mean at ~0 dB —
+the model cannot locate one needle in a haystack from an MSE gradient, which is
+the same symptom the synthetic min-max bug produced for a different reason.
+
+RX2 (grid RX_3) has the richer scattering the architecture assumes, and its
+top-10 concentration matches the synthetic reference exactly. The cost is
+discarding the ~39% of receivers with no ray-traced path to the transmitter.
+
+Loading more paths does **not** help: `max_paths` 10 and 25 give identical
+statistics, because the scenario contains no more than 10 paths per receiver.
+
+---
+
 ## What changed
 
 | File | Change |
