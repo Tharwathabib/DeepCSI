@@ -72,13 +72,22 @@ def combine_complex(x: np.ndarray) -> np.ndarray:
 def compute_energy_retention(H_ad: np.ndarray, max_delay: int = 32) -> float:
     """
     Compute percentage of total channel energy retained after delay tap truncation.
+
+    The denominator is guarded by an exact zero test, not by adding an epsilon.
+    Retention is a ratio, so an absolute floor silently rescales it whenever the
+    channel carries real path loss: a DeepMIMO user at 8.6e-11 total energy sits
+    BELOW a 1e-10 epsilon, and every such user then reports near-zero retention
+    no matter how delay-concentrated it actually is. That understated the median
+    RX2 user as 34% when the true figure is 99.4%.
     """
-    total_energy = np.sum(np.abs(H_ad) ** 2)
+    total_energy = float(np.sum(np.abs(H_ad) ** 2))
     if H_ad.ndim == 2:
-        truncated_energy = np.sum(np.abs(H_ad[:, :max_delay]) ** 2)
+        truncated_energy = float(np.sum(np.abs(H_ad[:, :max_delay]) ** 2))
     elif H_ad.ndim == 3:
-        truncated_energy = np.sum(np.abs(H_ad[:, :, :max_delay]) ** 2)
+        truncated_energy = float(np.sum(np.abs(H_ad[:, :, :max_delay]) ** 2))
     else:
         raise ValueError(f"Unsupported array dimension: {H_ad.ndim}")
 
-    return float((truncated_energy / (total_energy + 1e-10)) * 100.0)
+    if total_energy == 0.0:
+        return 0.0
+    return float(truncated_energy / total_energy * 100.0)

@@ -125,16 +125,26 @@ def to_angular_delay(H_sf: np.ndarray) -> tuple:
     """2D DFT, then truncate to the first 32 delay taps. Reports what truncation costs."""
     H_ad_full = spatial_frequency_to_angular_delay(H_sf)
     retention = compute_energy_retention(H_ad_full, max_delay=N_DELAYS)
+
+    # Sample the per-user distribution at random. Users arrive sorted by index
+    # and are loaded in chunks, so the first N rows are one contiguous patch of
+    # the grid rather than a sample of it -- that alone moved the reported
+    # median by 11 points.
+    n_probe = min(2000, len(H_ad_full))
+    probe = np.random.default_rng(0).choice(len(H_ad_full), size=n_probe, replace=False)
     per_sample = np.array([
-        compute_energy_retention(h, max_delay=N_DELAYS) for h in H_ad_full[:2000]
+        compute_energy_retention(H_ad_full[i], max_delay=N_DELAYS) for i in probe
     ])
     print(f"Delay truncation {N_SUBCARRIERS} -> {N_DELAYS} taps: "
           f"{retention:.2f}% of total energy retained "
           f"(per-user p5 {np.percentile(per_sample, 5):.2f}%, "
-          f"median {np.median(per_sample):.2f}%)")
+          f"median {np.median(per_sample):.2f}%, "
+          f"{np.mean(per_sample >= 90) * 100:.1f}% of users >=90%)")
     return truncate_delay(H_ad_full, N_DELAYS), {
         "energy_retention_percent": round(float(retention), 3),
         "energy_retention_p5_percent": round(float(np.percentile(per_sample, 5)), 3),
+        "energy_retention_median_percent": round(float(np.median(per_sample)), 3),
+        "users_above_90pct_retention": round(float(np.mean(per_sample >= 90) * 100), 2),
     }
 
 

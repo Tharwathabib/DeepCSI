@@ -69,6 +69,30 @@ def test_sparse_channel_energy_survives_truncation():
     assert retention > 95.0, f"only {retention:.1f}% retained"
 
 
+def test_retention_is_scale_invariant():
+    """Retention is a ratio, so scaling the channel must not change it.
+
+    DeepMIMO channels carry real path loss: a typical O1 user has total energy
+    near 1e-10, and the weakest are near 1e-16. An absolute epsilon in the
+    denominator therefore dominates the signal and drives retention to zero for
+    the majority of real users -- which is what made the median RX2 user look
+    like 34% retention instead of 99.4%. Synthetic O(1) data never exposes this.
+    """
+    H_ad = spatial_frequency_to_angular_delay(sparse_channel())
+    reference = compute_energy_retention(H_ad, max_delay=32)
+
+    for scale in (1e-5, 1e-8, 1e-11):
+        scaled = compute_energy_retention(H_ad * scale, max_delay=32)
+        assert abs(scaled - reference) < 1e-6, (
+            f"scaling by {scale:g} moved retention {reference:.2f}% -> {scaled:.2f}%"
+        )
+
+
+def test_retention_of_an_all_zero_channel_is_zero():
+    """Users with no ray-traced path reach this helper before they are dropped."""
+    assert compute_energy_retention(np.zeros((NT, NC), dtype=complex), max_delay=32) == 0.0
+
+
 def test_white_noise_retention_matches_tap_fraction():
     """Sanity check on the metric itself: white noise spreads energy uniformly."""
     rng = np.random.default_rng(1)
