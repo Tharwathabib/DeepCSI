@@ -188,7 +188,15 @@ def main():
     parser.add_argument("--epochs", type=int, default=30, help="Number of training epochs")
     parser.add_argument("--batch-size", type=int, default=64, help="Batch size")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
-    parser.add_argument("--weight-decay", type=float, default=1e-5, help="Weight decay")
+    # Default 0, not 1e-5. torch.optim.Adam adds weight_decay*w straight to the
+    # gradient, so it competes with the data term on absolute scale. An MSE loss
+    # on this data is ~3.7e-4, small enough that 1e-5 decay wins: the weights are
+    # pulled to zero, the sigmoid outputs a constant 0.5, and NMSE sits at
+    # exactly 0.00 dB. Measured on DeepMIMO RX0, CR=4, MSE loss:
+    #   weight_decay 1e-5 -> 0.01 dB after 12 epochs (collapsed)
+    #   weight_decay 0    -> -1.99 dB after 10 epochs, still improving
+    # It is silent -- training "converges", just to the mean.
+    parser.add_argument("--weight-decay", type=float, default=0.0, help="Weight decay")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--data-dir", type=str, default="data/processed",
                         help="Path to processed data directory")
@@ -370,6 +378,17 @@ def main():
     print(f"Best model saved to '{best_weights_path}' "
           f"(Epoch {best_epoch:02d}, Val NMSE: {best_val_nmse:.2f} dB)")
     print(f"Per-epoch log written to '{log_path}'")
+
+    # A model that emits a constant scores an NMSE of exactly 1.0, i.e. 0 dB,
+    # because its error equals the signal. Training looks like it converged --
+    # the loss curve is smooth and flat -- so this needs saying out loud.
+    if best_val_nmse > -0.5:
+        print(f"\nWARNING: best val NMSE is {best_val_nmse:.2f} dB, at or above 0 dB.\n"
+              "         The model has almost certainly collapsed to predicting the\n"
+              "         mean, which scores exactly 0 dB. Known causes, in order:\n"
+              "           - weight decay competing with a small MSE loss (use 0)\n"
+              "           - --augment on a dataset that is not angle-shift invariant\n"
+              "           - a dataset whose intrinsic rank is far below the latent size")
 
 
 if __name__ == "__main__":

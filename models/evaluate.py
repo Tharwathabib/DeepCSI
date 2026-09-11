@@ -27,6 +27,7 @@ from utils.metrics import (
 
 from models.csi_autoencoder import CSIAutoencoder
 from models.dct_baseline import evaluate_dct_baseline
+from models.pca_baseline import evaluate_pca_baseline
 
 # SNR at which spectral efficiency is reported. Stated explicitly because the
 # figure is meaningless without it.
@@ -177,6 +178,11 @@ def generate_plots(df_combined, sample_orig, sample_recon_cr16, sample_dct_cr16,
 
     plt.plot(df_deepcsi["compression_ratio"], df_deepcsi[nmse_col], "o-", color="#1f77b4", linewidth=2.5, label="DeepCSI Autoencoder")
     plt.plot(df_dct["compression_ratio"], df_dct[nmse_col], "s--", color="#ff7f0e", linewidth=2.5, label="2D DCT Baseline")
+
+    df_pca = df_combined[df_combined["method"] == "PCA Baseline"]
+    if not df_pca.empty:
+        plt.plot(df_pca["compression_ratio"], df_pca[nmse_col], "^-.", color="#9467bd",
+                 linewidth=2.5, label="PCA / KLT Baseline (optimal linear)")
 
     plt.axhline(-15, color="red", linestyle=":", label="Target Requirement (-15 dB)")
     plt.title("NMSE vs Compression Ratio (CR)", fontsize=14, fontweight="bold")
@@ -336,8 +342,23 @@ def main():
     # and the same normalisation metadata, so the comparison is like-for-like.
     df_dct = evaluate_dct_baseline(test_data_np, norm_params=norm_params, snr_db=SNR_DB)
 
+    # PCA is the stronger baseline: a linear autoencoder with k components is the
+    # optimal linear compressor, so it is the bar the learned model has to clear.
+    # Its basis is fit on TRAIN, never on the test samples scored here.
+    train_path = Path(args.data_dir) / "train.npy"
+    if train_path.exists():
+        pca_train = np.load(train_path)
+        if len(pca_train) > 20000:
+            sel = np.random.default_rng(0).choice(len(pca_train), 20000, replace=False)
+            pca_train = pca_train[sel]
+        df_pca = evaluate_pca_baseline(pca_train, test_data_np,
+                                       norm_params=norm_params, snr_db=SNR_DB)
+    else:
+        print(f"WARNING: {train_path} not found; skipping the PCA baseline.")
+        df_pca = pd.DataFrame()
+
     # Combine results
-    df_combined = pd.concat([df_deepcsi, df_dct], ignore_index=True)
+    df_combined = pd.concat([df_deepcsi, df_dct, df_pca], ignore_index=True)
 
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
