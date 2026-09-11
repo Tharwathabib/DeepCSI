@@ -214,7 +214,35 @@ generalisation-oriented options are therefore being judged in a regime that is
 not yet strongly overfitting, and `augment` in particular may look better still
 at full length.
 
-The recipe in use is **baseline + `--augment`**.
+### ⚠️ This ablation is confounded and its verdicts are withdrawn
+
+Every run above used `--weight-decay 1e-5`, the then-default. That default was
+later found to compete with the data gradient on absolute scale: `torch.optim.Adam`
+adds `weight_decay*w` straight to the gradient, and an MSE loss on this data is
+only ~3.7e-4, so the decay term can dominate and pull the weights to zero.
+
+This directly undermines two of the rows. `nmse_loss` takes values near 1.0
+rather than 3.7e-4, so its gradients are roughly 2700× larger and largely
+immune to the decay — meaning the comparison was never loss-vs-loss, it was
+loss-vs-(loss + a decay interaction that only affects one arm). "nmse_loss is
+2.43 dB worse" is not a supportable conclusion. On the DeepMIMO datasets the
+ordering in fact **reverses**: MSE at `1e-5` collapses to 0.00 dB where NMSE
+loss trains normally.
+
+Two further corrections to what this section used to claim:
+
+- **`--augment` is not a general win.** It is only valid where every angle is
+  equally likely. Synthetic satisfies that (peak/mean energy over angle bins
+  1.07); DeepMIMO does not (5.25 on TX5/RX2), and augmenting there cost ~9 dB.
+  `models/train.py` now measures this and warns.
+- **The recipe is no longer "baseline + `--augment`".** For synthetic it is
+  baseline with `--weight-decay 0`; for DeepMIMO it is `--loss nmse
+  --weight-decay 0` and no augmentation.
+
+The sweep needs re-running at `--weight-decay 0` before any of it is quoted.
+It is kept here rather than deleted because the negative result — that bundling
+four plausible changes cost 5.57 dB — still stands as a caution, even though
+the per-variant attributions do not.
 
 ---
 
@@ -243,6 +271,36 @@ discarding the ~39% of receivers with no ray-traced path to the transmitter.
 
 Loading more paths does **not** help: `max_paths` 10 and 25 give identical
 statistics, because the scenario contains no more than 10 paths per receiver.
+
+### ⚠️ The reasoning above is wrong, and the conclusion is reversed
+
+The collapse on RX0 was caused by `--augment` and by `--weight-decay 1e-5`, not
+by the grid. With both corrected, RX0 trains. Energy concentration was the
+wrong thing to measure: what decides whether a compression ratio means anything
+is the **intrinsic rank** of the dataset, because a latent larger than the rank
+is not a bottleneck at all.
+
+Measured rank (components for 90% / 99% of variance, of 2048):
+
+| config | angular conc | rank90 | rank99 | users with a path |
+|---|---:|---:|---:|---:|
+| TX5 / RX2 *(this section's pick)* | 5.23 | **29** | 59 | 61% |
+| TX10 / RX0 | 10.72 | 27 | 58 | 100% |
+| TX10 / RX2 | 2.38 | 37 | 73 | 100% |
+| TX15 / RX2 | 4.33 | 46 | 87 | 100% |
+| TX5 / RX0 | 2.34 | 112 | 202 | 100% |
+| **POOLED (all four)** | 3.03 | **291** | **544** | **100%** |
+| *synthetic reference* | *1.07* | *261* | *619* | — |
+
+TX5/RX2 — chosen above — is the **most degenerate option available**. At rank
+29, a latent of 512 (CR=4) or 128 (CR=16) is not a bottleneck, so NMSE cannot
+slope with CR no matter how good the model is. PCA scores −124 dB on it at
+CR=4, which is the giveaway. RX0, rejected above, is the richest single grid.
+
+The dataset is now **pooled across four tx:rx pairs** (`--pairs 5:0,10:2,15:2,10:0`),
+giving rank comparable to synthetic, 42 000 training samples, and no discarded
+users. CR=16 and CR=32 bind; CR=4 at latent 512 still does not, and the build
+prints which ratios bind so this cannot pass silently again.
 
 ---
 
