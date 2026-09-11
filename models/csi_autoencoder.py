@@ -49,25 +49,83 @@ class CSIEncoder(nn.Module):
     """
     CNN Encoder for CSI angular-delay representation.
     Compresses (B, 2, 32, 32) tensor (2048 scalars) down to a compact latent vector of size (B, latent_dim).
+
+    Two feature extractors are available:
+
+    csinet  Two stacked 3x3 convolutions, as in CsiNet.
+    crnet   Parallel branches with 1x9, 9x1 and 3x3 kernels, concatenated.
+            Angular-delay CSI is anisotropic -- a single propagation cluster
+            appears as a streak extended along one axis and narrow along the
+            other -- so isotropic 3x3 kernels are a poor match for the
+            structure. The elongated kernels cover a cluster in one hop.
+            This is a change of inductive bias, not of capacity, which is what
+            the measured 2-4 dB train/val gap calls for: the model is
+            overfitting, so adding parameters would make it worse.
     """
-    def __init__(self, latent_dim: int):
+    def __init__(self, latent_dim: int, arch: str = "csinet"):
         super().__init__()
         self.latent_dim = latent_dim
-        self.features = nn.Sequential(
-            nn.Conv2d(2, 8, kernel_size=3, padding=1),
-            nn.BatchNorm2d(8),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(8, 2, kernel_size=3, padding=1),
-            nn.BatchNorm2d(2),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Flatten()
-        )
+        self.arch = arch
+
+        if arch == "csinet":
+            self.features = nn.Sequential(
+                nn.Conv2d(2, 8, kernel_size=3, padding=1),
+                nn.BatchNorm2d(8),
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Conv2d(8, 2, kernel_size=3, padding=1),
+                nn.BatchNorm2d(2),
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Flatten()
+            )
+        elif arch == "crnet":
+            self.features = MultiResolutionBlock(in_channels=2, out_channels=2)
+        else:
+            raise ValueError(f"Unknown encoder arch: {arch!r}")
+
+        # The feature stage deliberately returns to 2 channels before the fully
+        # connected layer. Keeping more would multiply the FC weight count by
+        # that factor -- at CR=4 the FC is already ~1M of the ~1.05M encoder
+        # parameters, so widening here is the fastest way to overfit harder.
         self.fc_latent = nn.Linear(2048, latent_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         feat = self.features(x)
         latent = self.fc_latent(feat)
         return latent
+
+
+class MultiResolutionBlock(nn.Module):
+    """
+    CRNet-style parallel feature extractor.
+
+    Branch A: 3x3                      -- local, isotropic
+    Branch B: 1x9 then 9x1             -- wide along delay, then along angle
+    Concatenate, then project back to `out_channels`.
+
+    The 1x9/9x1 factorisation gives a 9x9 receptive field for far fewer
+    parameters than a dense 9x9 kernel.
+    """
+    def __init__(self, in_channels: int = 2, out_channels: int = 2, width: int = 8):
+        super().__init__()
+
+        def cbr(cin, cout, k, p):
+            return nn.Sequential(
+                nn.Conv2d(cin, cout, kernel_size=k, padding=p),
+                nn.BatchNorm2d(cout),
+                nn.LeakyReLU(0.2, inplace=True),
+            )
+
+        self.branch_local = cbr(in_channels, width, 3, 1)
+        self.branch_wide = nn.Sequential(
+            cbr(in_channels, width, (1, 9), (0, 4)),
+            cbr(width, width, (9, 1), (4, 0)),
+        )
+        self.fuse = cbr(2 * width, out_channels, 1, 0)
+        self.flatten = nn.Flatten()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        merged = torch.cat([self.branch_local(x), self.branch_wide(x)], dim=1)
+        return self.flatten(self.fuse(merged))
 
 
 class CSIDecoder(nn.Module):
@@ -100,10 +158,12 @@ class CSIAutoencoder(nn.Module):
     End-to-End DeepCSI Autoencoder.
     Supports Compression Ratios: CR=4 (latent_dim=512), CR=16 (latent_dim=128), CR=32 (latent_dim=64).
     """
-    def __init__(self, compression_ratio: int = 16, refine_widths: Tuple[int, ...] = (8, 16)):
+    def __init__(self, compression_ratio: int = 16, refine_widths: Tuple[int, ...] = (8, 16),
+                 arch: str = "csinet"):
         super().__init__()
         self.compression_ratio = compression_ratio
         self.refine_widths = tuple(refine_widths)
+        self.arch = arch
 
         # Calculate scalar budget: 2 * 32 * 32 = 2048 total scalars
         total_scalars = 2048
@@ -111,7 +171,7 @@ class CSIAutoencoder(nn.Module):
             raise ValueError(f"Total scalars (2048) must be divisible by compression_ratio ({compression_ratio}).")
 
         self.latent_dim = total_scalars // compression_ratio
-        self.encoder = CSIEncoder(self.latent_dim)
+        self.encoder = CSIEncoder(self.latent_dim, arch=arch)
         self.decoder = CSIDecoder(self.latent_dim, refine_widths=self.refine_widths)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:

@@ -17,6 +17,11 @@ data/processed/*.json
 # Real-data track: COST2100 tensors are multi-hundred-MB, regenerate with
 # python data/prepare_cost2100.py
 data/processed_cost2100/
+data/processed_deepmimo/
+
+# DeepMIMO scenario cache: 2.4 GB zip plus extracted ray-tracing data.
+# Re-fetch with deepmimo.download('o1_3p5').
+deepmimo_scenarios/
 
 # Models
 models/weights/*.pt

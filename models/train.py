@@ -1,6 +1,7 @@
 import argparse
 import csv
 import json
+import math
 import sys
 import time
 from pathlib import Path
@@ -40,7 +41,74 @@ def nmse_ratio_sum(recon: torch.Tensor, target: torch.Tensor, offset: float = 0.
     return torch.sum(numerator / denominator)
 
 
-def run_epoch(model, dataloader, criterion, device, optimizer=None, scaler=None, offset=0.0):
+class NMSELoss(nn.Module):
+    """
+    Mean per-sample linear NMSE: mean( ||h - h_hat||^2 / ||h||^2 ).
+
+    MSE weights every sample by its absolute energy, so high-energy users
+    dominate the gradient and low-energy ones are effectively ignored. That is
+    exactly the failure the per-sample NMSE percentiles exposed: the worst users
+    score around 0 dB, i.e. no usable reconstruction, while the mean looks fine.
+
+    Normalising per sample makes the training objective the same quantity the
+    model is scored on, and gives low-energy users equal weight.
+    """
+    def __init__(self, offset: float = 0.0):
+        super().__init__()
+        self.offset = offset
+
+    def forward(self, recon: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        target_c = target - self.offset
+        num = torch.sum((target_c - (recon - self.offset)) ** 2, dim=(1, 2, 3))
+        den = torch.sum(target_c ** 2, dim=(1, 2, 3)) + 1e-10
+        return torch.mean(num / den)
+
+
+def augment_angle_shift(batch: torch.Tensor) -> torch.Tensor:
+    """
+    Circularly shift each sample along the antenna/angle axis by a random amount.
+
+    The angular axis is a DFT output over a uniform linear array, so it is
+    periodic: rolling it yields a physically valid channel for a user at a
+    different angle. The delay axis is NOT periodic in this sense -- tap 0 is
+    privileged and energy decays with delay -- so it is left alone.
+
+    Gives up to 32 distinct views of every training sample at zero cost, which
+    is aimed squarely at the 2-4 dB train/val gap.
+    """
+    shifts = torch.randint(0, batch.shape[2], (batch.shape[0],), device=batch.device)
+    # torch.roll cannot take per-sample shifts, so gather with rolled indices.
+    idx = (torch.arange(batch.shape[2], device=batch.device).unsqueeze(0) - shifts.unsqueeze(1)) % batch.shape[2]
+    idx = idx.view(batch.shape[0], 1, batch.shape[2], 1).expand_as(batch)
+    return torch.gather(batch, 2, idx)
+
+
+def build_scheduler(optimizer, name: str, epochs: int, warmup_frac: float = 0.05):
+    """
+    ReduceLROnPlateau (default) or cosine annealing with linear warmup.
+
+    CRNet attributes a substantial part of its margin over CsiNet to the cosine
+    schedule rather than to architecture, and the plateau schedule here decayed
+    the LR to ~1e-05 and stalled well before the epoch budget ran out.
+    """
+    if name == "plateau":
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=0.5, patience=3
+        )
+
+    warmup = max(1, int(epochs * warmup_frac))
+
+    def lr_lambda(epoch):
+        if epoch < warmup:
+            return (epoch + 1) / warmup
+        progress = (epoch - warmup) / max(1, epochs - warmup)
+        return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+
+def run_epoch(model, dataloader, criterion, device, optimizer=None, scaler=None, offset=0.0,
+              augment=False):
     """
     Run one epoch. Trains when an optimizer is supplied, otherwise evaluates.
 
@@ -57,6 +125,8 @@ def run_epoch(model, dataloader, criterion, device, optimizer=None, scaler=None,
 
     for (batch_x,) in dataloader:
         batch_x = batch_x.to(device, non_blocking=True)
+        if augment and training:
+            batch_x = augment_angle_shift(batch_x)
 
         with torch.set_grad_enabled(training):
             if scaler is not None:
@@ -109,6 +179,16 @@ def main():
                         help="Enable mixed-precision training (CUDA only)")
     parser.add_argument("--refine-widths", type=int, nargs="+", default=[8, 16],
                         help="Decoder RefineNet block widths. Default 8 16 matches CsiNet.")
+    # The four flags below default to the existing behaviour so each can be
+    # ablated independently against the committed baseline.
+    parser.add_argument("--loss", choices=["mse", "nmse"], default="mse",
+                        help="nmse weights every sample equally and matches the reported metric.")
+    parser.add_argument("--scheduler", choices=["plateau", "cosine"], default="plateau",
+                        help="cosine adds linear warmup then cosine annealing.")
+    parser.add_argument("--augment", action="store_true",
+                        help="Random circular shift along the angle axis.")
+    parser.add_argument("--arch", choices=["csinet", "crnet"], default="csinet",
+                        help="crnet uses a multi-resolution encoder (1x9/9x1/3x3 branches).")
     args = parser.parse_args()
 
     set_seed(args.seed)
@@ -161,16 +241,16 @@ def main():
     model = CSIAutoencoder(
         compression_ratio=args.compression_ratio,
         refine_widths=tuple(args.refine_widths),
+        arch=args.arch,
     ).to(device)
-    print(f"Model initialized: latent_dim={model.latent_dim}, "
+    print(f"Model initialized: arch={args.arch}, latent_dim={model.latent_dim}, "
           f"refine_widths={tuple(args.refine_widths)}, "
           f"total_params={sum(p.numel() for p in model.parameters()):,}")
 
-    criterion = nn.MSELoss()
+    criterion = NMSELoss(offset) if args.loss == "nmse" else nn.MSELoss()
+    print(f"Loss: {args.loss} | scheduler: {args.scheduler} | augment: {args.augment}")
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    # Step on the same quantity used to select the best checkpoint, so the LR
-    # schedule and the checkpointing agree on what "improvement" means.
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=3)
+    scheduler = build_scheduler(optimizer, args.scheduler, args.epochs)
 
     scaler = None
     if args.amp:
@@ -202,14 +282,14 @@ def main():
     for epoch in range(1, args.epochs + 1):
         train_loss, train_nmse = run_epoch(
             model, train_loader, criterion, device,
-            optimizer=optimizer, scaler=scaler, offset=offset
+            optimizer=optimizer, scaler=scaler, offset=offset, augment=args.augment
         )
         val_loss, val_nmse = run_epoch(
             model, val_loader, criterion, device, offset=offset
         )
 
-        # Select and schedule on the same quantity we report.
-        scheduler.step(val_nmse)
+        # Plateau needs the monitored metric; cosine steps on epoch count.
+        scheduler.step(val_nmse) if args.scheduler == "plateau" else scheduler.step()
         current_lr = optimizer.param_groups[0]["lr"]
         elapsed = time.time() - start_time
 
@@ -224,6 +304,7 @@ def main():
                 "compression_ratio": args.compression_ratio,
                 "latent_dim": model.latent_dim,
                 "refine_widths": tuple(args.refine_widths),
+                "arch": args.arch,
                 "epoch": epoch,
                 "val_nmse_db": val_nmse,
                 "data_source": (norm_params or {}).get("source", "unknown"),
