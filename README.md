@@ -47,7 +47,15 @@ Reconstructed CSI  ──>  Inverse 2D FFT  ──>  Downlink Precoding
 ## Key Performance Indicators
 
 Measured on the 2,000-sample synthetic test set, 90 training epochs per model.
-Reproduce with `python data/generate_data.py && python models/train.py -cr {4,16,32} --epochs 90 --patience 25 && python models/evaluate.py`.
+Reproduce with `python data/generate_data.py && python models/train.py -cr {4,16,32} --epochs 90 --patience 25 --weight-decay 1e-5 && python models/evaluate.py`.
+
+`--weight-decay 1e-5` is required to reproduce these figures and is **not** the
+default. The default is 0 because on DeepMIMO a decay of 1e-5 collapses
+training outright — `torch.optim.Adam` adds `weight_decay*w` straight to the
+gradient, and an MSE loss of ~3.7e-4 is small enough to lose that contest. The
+synthetic set is the opposite case: only 7,000 training samples with a 3.63 dB
+train/val gap, so the regularisation is worth 1.48 dB (−11.22 vs −9.74). Pick
+per dataset; `models/train.py` warns if the result looks collapsed.
 
 | Compression Ratio (CR) | Retained Scalars | Scalar Reduction | DeepCSI NMSE | DeepCSI MRT Gain | DCT Baseline NMSE | DCT MRT Gain |
 | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -76,6 +84,14 @@ python models/train.py --data-dir data/processed_deepmimo -cr {4,16,32} \
     --epochs 60 --loss nmse --weight-decay 0 --output-dir models/weights_deepmimo
 python models/evaluate.py --data-dir data/processed_deepmimo \
     --weights-dir models/weights_deepmimo --results-dir results_deepmimo
+```
+
+To run the live demo against these artifacts instead of the synthetic ones,
+point the two environment variables at them — no code change needed:
+```bash
+DATA_DIR=data/processed_deepmimo WEIGHTS_DIR=models/weights_deepmimo python preflight.py
+DATA_DIR=data/processed_deepmimo WEIGHTS_DIR=models/weights_deepmimo \
+    python -m uvicorn backend.app:app --port 8001
 ```
 
 | CR | Retained | **DeepCSI** | PCA / KLT | 2D DCT | ρ | MRT gain |

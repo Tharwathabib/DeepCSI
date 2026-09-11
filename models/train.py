@@ -196,6 +196,18 @@ def main():
     #   weight_decay 1e-5 -> 0.01 dB after 12 epochs (collapsed)
     #   weight_decay 0    -> -1.99 dB after 10 epochs, still improving
     # It is silent -- training "converges", just to the mean.
+    #
+    # 0 is not universally better, so set this per dataset. On the synthetic set
+    # -- 7000 samples with a 3.63 dB train/val gap -- the regularisation is
+    # worth 1.48 dB at CR=4 (-11.22 with 1e-5 against -9.74 without). DeepMIMO
+    # has 42000 samples and barely overfits, so it gains nothing and loses
+    # everything.
+    #
+    # The principled fix is torch.optim.AdamW, whose decoupled decay is applied
+    # to the weights directly rather than added to the gradient, so it cannot
+    # out-shout a small loss. Not adopted here only because switching optimiser
+    # invalidates every measured number in the README and needs a re-run on both
+    # datasets to verify.
     parser.add_argument("--weight-decay", type=float, default=0.0, help="Weight decay")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--data-dir", type=str, default="data/processed",
