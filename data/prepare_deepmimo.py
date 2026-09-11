@@ -197,24 +197,29 @@ def main():
     parser = argparse.ArgumentParser(description="Prepare a DeepMIMO scenario for DeepCSI.")
     parser.add_argument("--scenario", default="o1_3p5_downloaded")
     parser.add_argument("--output-dir", default="data/processed_deepmimo")
-    parser.add_argument("--samples", type=int, default=40000, help="Users to sample.")
-    parser.add_argument("--tx-set", type=int, default=5, help="Base station TX set id.")
-    # RX set 2 (grid RX_3), not 0. The choice decides whether the data is
-    # learnable at all. Measured angular-delay energy concentration, median over
-    # 1500 users, against the synthetic set that trains to -11 dB:
+    parser.add_argument("--samples", type=int, default=15000,
+                        help="Users to sample PER (tx,rx) pair.")
+    # Pool several base-station / user-grid pairs. A single pair does not span
+    # enough angles for the compression ratio to mean anything: measured
+    # intrinsic rank of the angular-delay tensor (components for 90% / 99% of
+    # variance, out of 2048), alongside the synthetic set at 261 / 619:
     #
-    #   config          top-1 bin   top-10 bins   bins for 90%   users with a path
-    #   TX5/RX0            54.9%        93.4%            7            100%
-    #   TX15/RX0           39.0%        87.0%           14             42%
-    #   TX5/RX2            35.9%        84.8%           18             61%
-    #   synthetic ref      24.5%        84.8%           13              --
+    #   config            angular conc   rank90   rank99   users with a path
+    #   TX5/RX2  (old default)   5.23       29       59          61%
+    #   TX10/RX0                10.72       27       58         100%
+    #   TX10/RX2                 2.38       37       73         100%
+    #   TX15/RX2                 4.33       46       87         100%
+    #   TX5/RX0                  2.34      112      202         100%
+    #   POOLED (all four)        3.03      177      350         100%
     #
-    # RX0 is LoS-dominated: half the channel energy sits in a single bin of
-    # 1024, and training on it collapses to the mean at ~0 dB -- the model
-    # cannot find one needle in a haystack from an MSE gradient. RX2 has the
-    # richer scattering the architecture was designed for, at the cost of
-    # discarding the ~39% of receivers with no ray-traced path.
-    parser.add_argument("--rx-set", type=int, default=2, help="User grid RX set id.")
+    # At rank 29 a latent of 512 (CR=4) or 128 (CR=16) is not a bottleneck at
+    # all, so NMSE cannot slope with CR -- the same flat curve that originally
+    # signalled the metric bug, this time caused by the data. Pooling puts
+    # CR=16 and CR=32 below the rank where they bind. CR=4 at latent 512 still
+    # sits above rank 350 and remains an easy case for this scenario; that is a
+    # property of O1, and is reported rather than hidden.
+    parser.add_argument("--pairs", default="5:0,10:2,15:2,10:0",
+                        help="Comma-separated tx:rx set ids to pool.")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -223,8 +228,14 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print("=== DeepCSI DeepMIMO Dataset Preparation ===")
-    H_sf = load_channels(args.scenario, args.tx_set, args.rx_set, args.samples, args.seed)
-    print(f"Spatial-frequency channels: {H_sf.shape}")
+    pairs = [tuple(int(v) for v in p.split(":")) for p in args.pairs.split(",")]
+    parts = []
+    for i, (tx, rx) in enumerate(pairs):
+        # Vary the seed per pair so each draws a different user sample.
+        parts.append(load_channels(args.scenario, tx, rx, args.samples, args.seed + i))
+    H_sf = np.concatenate(parts, axis=0)
+    print(f"Spatial-frequency channels: {H_sf.shape} "
+          f"pooled from {len(pairs)} tx:rx pairs {pairs}")
 
     H_sf, clean_report = clean(H_sf)
     H_ad, energy_report = to_angular_delay(H_sf)
@@ -233,6 +244,21 @@ def main():
     data = normalize_per_sample(H_ad)
     print(f"Normalised tensor: {data.shape} {data.dtype} "
           f"range [{data.min():.4f}, {data.max():.4f}] std {data.std():.4f}")
+
+    # Intrinsic rank decides whether a latent of 512/128/64 is a bottleneck at
+    # all. A set whose rank is below the latent size cannot produce an
+    # NMSE-vs-CR curve that slopes, no matter how good the model is.
+    probe = data[np.random.default_rng(0).choice(len(data), min(6000, len(data)), replace=False)]
+    flat = probe.reshape(len(probe), -1).astype(np.float64)
+    sv = np.linalg.svd(flat - flat.mean(0), compute_uv=False)
+    ev = np.cumsum(sv ** 2) / np.sum(sv ** 2)
+    rank90, rank99 = int(np.searchsorted(ev, 0.90) + 1), int(np.searchsorted(ev, 0.99) + 1)
+    print(f"Intrinsic rank of 2048: {rank90} components for 90% of variance, "
+          f"{rank99} for 99%")
+    for cr, latent in ((4, 512), (16, 128), (32, 64)):
+        print(f"  CR={cr:<2} latent {latent:<4} "
+              f"{'binds (below rank90)' if latent < rank90 else 'does NOT bind -- latent exceeds rank90'}")
+    energy_report["rank90"], energy_report["rank99"] = rank90, rank99
 
     # Shuffle before splitting. DeepMIMO orders users by grid position, so an
     # unsplit-shuffled dataset would put one end of the street in train and the
@@ -257,7 +283,7 @@ def main():
         print(f"Saved {name}.npy {arr.shape} ({arr.nbytes / 1e6:.0f} MB)")
 
     norm_params = {
-        "source": f"deepmimo_{args.scenario}_tx{args.tx_set}_rx{args.rx_set}",
+        "source": f"deepmimo_{args.scenario}_pooled_{args.pairs.replace(':', 't').replace(',', '_')}",
         "scheme": "csinet_offset",
         "offset": 0.5,
         "min": -0.5,
