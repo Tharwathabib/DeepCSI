@@ -29,3 +29,5 @@ results/figures/*.png
 .idea/
 .DS_Store
 Thumbs.db
+.agents/
+

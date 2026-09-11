@@ -181,6 +181,19 @@ def run_model_inference(sample_np: np.ndarray, compression_ratio: int):
     return recon_np, inference_ms, nmse_val, bf_gain_val, bf_loss_val, model.latent_dim
 
 
+
+@app.get("/")
+def root():
+    """Root endpoint providing API info and documentation link."""
+    return {
+        "title": "DeepCSI Inference API",
+        "status": "online",
+        "docs_url": "/docs",
+        "health_url": "/health",
+        "available_models": sorted(list(LOADED_MODELS.keys()))
+    }
+
+
 @app.get("/health")
 def get_health():
     """Health check endpoint providing system status, device, and available models."""
