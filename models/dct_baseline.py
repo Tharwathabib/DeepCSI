@@ -11,7 +11,8 @@ root_dir = Path(__file__).resolve().parent.parent
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
-from utils.metrics import nmse_per_sample_db, beamforming_gain_numpy, beamforming_loss_db
+from utils.metrics import (nmse_per_sample_db, nmse_distribution, beamforming_gain_numpy,
+                           beamforming_loss_db, spectral_efficiency)
 
 
 def compress_reconstruct_dct_sample(sample_2ch: np.ndarray, retained_scalars: int) -> np.ndarray:
@@ -57,7 +58,7 @@ def compress_reconstruct_dct_sample(sample_2ch: np.ndarray, retained_scalars: in
     return np.stack([recon_real, recon_imag], axis=0)
 
 
-def evaluate_dct_baseline(test_data: np.ndarray, norm_params: dict = None):
+def evaluate_dct_baseline(test_data: np.ndarray, norm_params: dict = None, snr_db: float = 10.0):
     """
     Evaluate DCT baseline performance across CR=4, CR=16, CR=32 on test set.
 
@@ -103,18 +104,25 @@ def evaluate_dct_baseline(test_data: np.ndarray, norm_params: dict = None):
               f"/ {mean_nmse:6.2f} +/- {std_nmse:4.2f} dB (per-sample) | "
               f"BF Gain: {mean_gain*100:5.2f}% ({loss_db:5.2f} dB) | Latency: {elapsed_ms:.3f} ms/sample")
 
+        gains_arr = np.asarray(gain_list)
         results.append({
             "method": "DCT Baseline",
             "compression_ratio": cr,
             "latent_dim": retained,
+            "scalar_reduction_percent": round(scalar_reduction, 2),
             "nmse_db_mean": round(mean_nmse, 2),
             "nmse_db_std": round(std_nmse, 2),
             "nmse_db_aggregate": round(aggregate_nmse, 2),
+            "cosine_similarity_rho": round(float(np.mean(np.sqrt(gains_arr))), 4),
             "beamforming_gain_mean": round(mean_gain, 4),
             "beamforming_gain_std": round(std_gain, 4),
             "beamforming_loss_db": round(loss_db, 2),
+            "spectral_efficiency_bps_hz": round(
+                float(np.mean(spectral_efficiency(gains_arr, snr_db))), 4),
+            **{k: round(v, 4) for k, v in nmse_distribution(nmse_list).items()},
+            # The DCT transform has no learned parameters and no separate
+            # encoder/decoder halves, so only a combined per-sample cost exists.
             "inference_ms": round(elapsed_ms, 3),
-            "scalar_reduction_percent": round(scalar_reduction, 2)
         })
 
     return pd.DataFrame(results)

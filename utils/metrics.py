@@ -338,3 +338,39 @@ def beamforming_loss_db(gain: Union[float, np.ndarray]) -> Union[float, np.ndarr
     if isinstance(gain, np.ndarray):
         return 10.0 * np.log10(np.clip(gain, 1e-10, 1.0))
     return float(10.0 * np.log10(max(gain, 1e-10)))
+
+
+def spectral_efficiency(gain: Union[float, np.ndarray], snr_db: float = 10.0) -> Union[float, np.ndarray]:
+    """
+    Single-user MRT spectral efficiency in bit/s/Hz: log2(1 + snr * G).
+
+    Translates the beamforming gain into the quantity a link budget is actually
+    written in. With perfect CSI G = 1 and this reduces to the Shannon rate at
+    the given SNR, so comparing against that upper bound gives the throughput
+    cost of imperfect feedback.
+
+    Note this is an upper bound on what the compression costs: it assumes the
+    only impairment is beam misalignment, ignoring interference, scheduling and
+    feedback delay.
+    """
+    snr_linear = 10.0 ** (snr_db / 10.0)
+    return np.log2(1.0 + snr_linear * np.asarray(gain))
+
+
+def nmse_distribution(nmse_per_sample_db_values: np.ndarray) -> dict:
+    """
+    Summarise a per-sample NMSE distribution by percentiles rather than mean/std.
+
+    NMSE in dB is heavy-tailed and asymmetric, so "mean +/- std" implies a
+    symmetric spread that does not exist and understates the bad tail. p95 is
+    the number that answers "how poorly does this do on the users it handles
+    worst", which matters more than the average for a scheduler.
+    """
+    v = np.asarray(nmse_per_sample_db_values, dtype=np.float64)
+    p5, p50, p95 = np.percentile(v, [5, 50, 95])
+    return {
+        "nmse_db_p5": float(p5),
+        "nmse_db_median": float(p50),
+        "nmse_db_p95": float(p95),
+        "nmse_db_worst": float(v.max()),
+    }

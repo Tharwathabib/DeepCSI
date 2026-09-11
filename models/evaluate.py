@@ -19,11 +19,18 @@ if str(root_dir) not in sys.path:
 from utils.metrics import (
     nmse_db_aggregate,
     nmse_per_sample_db,
+    nmse_distribution,
     beamforming_gain_torch,
     beamforming_loss_db,
+    spectral_efficiency,
 )
+
 from models.csi_autoencoder import CSIAutoencoder
 from models.dct_baseline import evaluate_dct_baseline
+
+# SNR at which spectral efficiency is reported. Stated explicitly because the
+# figure is meaningless without it.
+SNR_DB = 10.0
 
 # Published results on the COST2100 indoor benchmark, for context in the results
 # table. Sources:
@@ -34,6 +41,58 @@ LITERATURE_NMSE_DB = {
     "CsiNet (published, indoor)": {4: -17.36, 16: -8.65, 32: -6.24},
     "CRNet (published, indoor)": {4: -26.99, 16: -11.35, 32: -8.93},
 }
+
+
+def measure_latency(model, test_tensor, device, n_runs: int = 100):
+    """
+    Measure encoder and decoder latency separately, at batch size 1.
+
+    The two halves run on different hardware in a real deployment -- the encoder
+    on the UE, the decoder at the gNodeB -- so a combined figure hides the only
+    number that decides feasibility. Batch size 1 is what a UE actually does; the
+    full-batch figure is throughput, not latency, and is reported separately
+    under its own name rather than being called latency.
+
+    Reports the median over n_runs, which is robust to scheduler jitter in a way
+    the mean is not.
+    """
+    single = test_tensor[:1]
+    enc, dec = [], []
+
+    with torch.no_grad():
+        for _ in range(10):                      # warmup
+            model.decoder(model.encoder(single))
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+
+        for _ in range(n_runs):
+            t0 = time.perf_counter()
+            latent = model.encoder(single)
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            t1 = time.perf_counter()
+            model.decoder(latent)
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            t2 = time.perf_counter()
+            enc.append((t1 - t0) * 1000.0)
+            dec.append((t2 - t1) * 1000.0)
+
+        # Amortised full-batch cost: throughput, for comparison with the above.
+        t0 = time.perf_counter()
+        model(test_tensor)
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        batch_ms = (time.perf_counter() - t0) * 1000.0
+
+    return {
+        "encoder_ms_ue": float(np.median(enc)),
+        "decoder_ms_gnb": float(np.median(dec)),
+        # Amortised full-batch cost. Kept under the name inference_ms because
+        # the dashboard reads that column, but it is throughput, not latency:
+        # a UE encodes one channel at a time and pays encoder_ms_ue.
+        "inference_ms": float(batch_ms / len(test_tensor)),
+    }
 
 
 def evaluate_deepcsi_model(model, test_tensor, device, norm_params=None):
@@ -51,13 +110,10 @@ def evaluate_deepcsi_model(model, test_tensor, device, norm_params=None):
         if device.type == "cuda":
             torch.cuda.synchronize()
 
-    # Latency timing
-    start_time = time.time()
+    timing = measure_latency(model, test_tensor, device)
+
     with torch.no_grad():
         reconstructions, latents = model(test_tensor)
-        if device.type == "cuda":
-            torch.cuda.synchronize()
-    elapsed_ms = ((time.time() - start_time) / num_samples) * 1000.0
 
     # Compute per-sample NMSE and beamforming gain
     with torch.no_grad():
@@ -78,7 +134,7 @@ def evaluate_deepcsi_model(model, test_tensor, device, norm_params=None):
         gains_tensor = beamforming_gain_torch(
             reconstructions, test_tensor, return_per_sample=True, norm_params=norm_params
         )
-        gains_list = gains_tensor.cpu().numpy().tolist()
+        gains_list = gains_tensor.cpu().numpy()
 
     mean_nmse = float(np.mean(nmse_per_sample))
     std_nmse = float(np.std(nmse_per_sample))
@@ -86,8 +142,24 @@ def evaluate_deepcsi_model(model, test_tensor, device, norm_params=None):
     std_gain = float(np.std(gains_list))
     loss_db = float(beamforming_loss_db(mean_gain))
 
-    return (mean_nmse, std_nmse, aggregate_nmse, mean_gain, std_gain, loss_db,
-            elapsed_ms, reconstructions.cpu().numpy(), latents.cpu().numpy())
+    stats = {
+        "nmse_db_mean": mean_nmse,
+        "nmse_db_std": std_nmse,
+        "nmse_db_aggregate": aggregate_nmse,
+        # rho itself, not just rho^2 -- CsiNet and CRNet report rho, so without
+        # this column the results cannot be placed beside published tables.
+        "cosine_similarity_rho": float(np.mean(np.sqrt(gains_list))),
+        "beamforming_gain_mean": mean_gain,
+        "beamforming_gain_std": std_gain,
+        "beamforming_loss_db": loss_db,
+        "spectral_efficiency_bps_hz": float(np.mean(spectral_efficiency(gains_list, SNR_DB))),
+        **nmse_distribution(nmse_per_sample),
+        **timing,
+        "encoder_params": sum(p.numel() for p in model.encoder.parameters()),
+        "decoder_params": sum(p.numel() for p in model.decoder.parameters()),
+    }
+
+    return stats, reconstructions.cpu().numpy(), latents.cpu().numpy()
 
 
 def generate_plots(df_combined, sample_orig, sample_recon_cr16, sample_dct_cr16, figures_dir):
@@ -230,8 +302,7 @@ def main():
             print(f"  WARNING: CR={cr} weights were trained on '{ckpt_source}' "
                   f"but the test set is '{current_source}'.")
 
-        (mean_nmse, std_nmse, aggregate_nmse, mean_gain, std_gain,
-         loss_db, latency, recons, latents) = evaluate_deepcsi_model(
+        stats, recons, latents = evaluate_deepcsi_model(
             model, test_tensor, device, norm_params=norm_params
         )
         reconstructions_dict[cr] = recons
@@ -239,29 +310,26 @@ def main():
         latent_dim = total_scalars // cr
         scalar_reduction = (1.0 - (latent_dim / total_scalars)) * 100.0
 
-        print(f"DeepCSI CR={cr:2d} | Latent: {latent_dim:4d} | NMSE: {aggregate_nmse:6.2f} dB (agg) "
-              f"/ {mean_nmse:6.2f} +/- {std_nmse:4.2f} dB (per-sample) | "
-              f"BF Gain: {mean_gain*100:5.2f}% ({loss_db:5.2f} dB) | Latency: {latency:.3f} ms/sample")
+        print(f"DeepCSI CR={cr:2d} | Latent: {latent_dim:4d} | "
+              f"NMSE {stats['nmse_db_aggregate']:6.2f} dB "
+              f"(p50 {stats['nmse_db_median']:6.2f}, p95 {stats['nmse_db_p95']:6.2f}) | "
+              f"rho {stats['cosine_similarity_rho']:.4f} | "
+              f"G {stats['beamforming_gain_mean']*100:5.2f}% | "
+              f"enc {stats['encoder_ms_ue']:.3f} ms / dec {stats['decoder_ms_gnb']:.3f} ms")
 
         deepcsi_results.append({
             "method": "DeepCSI",
             "compression_ratio": cr,
             "latent_dim": latent_dim,
-            "nmse_db_mean": round(mean_nmse, 2),
-            "nmse_db_std": round(std_nmse, 2),
-            "nmse_db_aggregate": round(aggregate_nmse, 2),
-            "beamforming_gain_mean": round(mean_gain, 4),
-            "beamforming_gain_std": round(std_gain, 4),
-            "beamforming_loss_db": round(loss_db, 2),
-            "inference_ms": round(latency, 3),
-            "scalar_reduction_percent": round(scalar_reduction, 2)
+            "scalar_reduction_percent": round(scalar_reduction, 2),
+            **{k: (round(v, 4) if isinstance(v, float) else v) for k, v in stats.items()},
         })
 
     df_deepcsi = pd.DataFrame(deepcsi_results)
 
     # Run DCT Baseline evaluation on the same test samples, same scalar budget
     # and the same normalisation metadata, so the comparison is like-for-like.
-    df_dct = evaluate_dct_baseline(test_data_np, norm_params=norm_params)
+    df_dct = evaluate_dct_baseline(test_data_np, norm_params=norm_params, snr_db=SNR_DB)
 
     # Combine results
     df_combined = pd.concat([df_deepcsi, df_dct], ignore_index=True)
