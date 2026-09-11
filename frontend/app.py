@@ -915,6 +915,13 @@ with tab_bench:
     if metrics_csv.exists():
         df_bench = pd.read_csv(metrics_csv)
 
+        # Quote the same NMSE the results table and README quote: the
+        # log-of-mean aggregate, which is the literature convention. Falling
+        # back to nmse_db_mean keeps older metrics.csv files readable, but when
+        # both exist they differ by more than a dB, and showing one on screen
+        # while the slides show the other is a live-demo hazard.
+        NMSE_COL = "nmse_db_aggregate" if "nmse_db_aggregate" in df_bench.columns else "nmse_db_mean"
+
         col_plot, col_table = st.columns([1.2, 1.0])
 
         with col_plot:
@@ -935,17 +942,17 @@ with tab_bench:
                 fig_bar.add_trace(go.Bar(
                     name="DeepCSI Autoencoder",
                     x=[f"CR={cr}" for cr in df_deep["compression_ratio"]],
-                    y=df_deep["nmse_db_mean"],
+                    y=df_deep[NMSE_COL],
                     marker_color="#2563EB",
-                    text=[f"{v:.1f} dB" for v in df_deep["nmse_db_mean"]],
+                    text=[f"{v:.1f} dB" for v in df_deep[NMSE_COL]],
                     textposition="auto"
                 ))
                 fig_bar.add_trace(go.Bar(
                     name="2D DCT Baseline",
                     x=[f"CR={cr}" for cr in df_dct["compression_ratio"]],
-                    y=df_dct["nmse_db_mean"],
+                    y=df_dct[NMSE_COL],
                     marker_color="#475569",
-                    text=[f"{v:.1f} dB" for v in df_dct["nmse_db_mean"]],
+                    text=[f"{v:.1f} dB" for v in df_dct[NMSE_COL]],
                     textposition="auto"
                 ))
                 fig_bar.add_hline(
@@ -1020,7 +1027,7 @@ with tab_bench:
                 cr = int(row["compression_ratio"])
                 latent = int(row["latent_dim"])
                 overhead = float(row["scalar_reduction_percent"])
-                nmse = float(row["nmse_db_mean"])
+                nmse = float(row[NMSE_COL])
                 lat = float(row["inference_ms"])
                 bf_gain = float(row.get("beamforming_gain_mean", 0.9998)) * 100.0
 

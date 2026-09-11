@@ -101,6 +101,90 @@ metrics and backend treat synthetic and COST2100 data identically.
 
 ---
 
+---
+
+## The DeepMIMO track (what actually shipped)
+
+The COST2100 download is blocked (Google Drive folder-mode `gdown` returns
+nothing for files over ~100 MB). **DeepMIMO** replaced it and is arguably better:
+ray-traced from real building geometry rather than a statistical model, and it
+downloads from Python with no quota to hit.
+
+```python
+import deepmimo as dm
+dm.download('o1_3p5')          # O1 urban canyon, 3.5 GHz, 2.27 GB
+```
+
+Unlike COST2100, DeepMIMO ships raw ray-tracing rather than pre-made
+angular-delay tensors, so it forces the **full pipeline** into the execution
+path for the first time:
+
+```
+ray tracing -> H(32 antennas x 256 subcarriers)
+            -> 2D DFT (FFT over antennas, IFFT over subcarriers)
+            -> truncate to 32 delay taps
+            -> per-sample [0,1] with 0.5 as complex zero
+            -> shuffle -> 70/10/20 split
+```
+
+That is exactly the flow the README has always advertised and nothing
+implemented. Running it immediately surfaced a bug — see "FFT direction" below.
+
+### Measured, not assumed
+
+**Delay truncation is justified.** Truncating 256 subcarriers to 32 delay taps
+retains **96.49%** of channel energy (per-user p5 91.04%, median 97.69%). The
+README asserted this was safe from day one with no measurement behind it.
+
+**FFT direction was wrong.** `spatial_frequency_to_angular_delay` used `fft2`.
+A path of delay tau has response `exp(-2j*pi*tau*k/Nc)`, so a *forward* DFT
+along subcarriers places it at index `Nc-tau` — the far end. Truncating to the
+first 32 taps would have kept noise and discarded the channel:
+
+| | energy retained by 32-of-256 truncation |
+|---|---|
+| before (`fft2`) | 75.8% — split between index 0 and index 255 |
+| after (`ifft` on subcarriers) | 100.0% |
+
+Invisible because the functions were dead code with no test. Now covered by
+`tests/test_transforms.py`.
+
+### Data-engineering decisions
+
+| Decision | Why |
+|---|---|
+| Sample users **uniformly**, not a contiguous slice | DeepMIMO orders receivers by grid position. The first 2000 span **5.8 dB** of path loss; a uniform sample spans **48.5 dB**. |
+| **Shuffle before splitting** | Otherwise val/test measure generalisation across geography, not compression. |
+| **Drop** zero-power users | Ray tracing returns exactly zero where no path exists. These divide by zero in per-sample normalisation and vanish the NMSE denominator. They are users the BS cannot serve, not outliers to clip. |
+| **Per-sample peak** normalisation | See below. |
+
+**Why peak scaling despite its low spread.** Peak normalisation leaves std ≈
+0.018, and quantile/RMS scales spread the data much further — but they clip, and
+the clipped values are the peaks that carry the energy. Measured round-trip NMSE
+floors, before any model is involved:
+
+| scheme | clipped | NMSE floor |
+|---|---:|---:|
+| **peak** | 0.000% | **lossless** |
+| q=0.999 | 0.146% | −6.39 dB |
+| 4·rms | 0.335% | −3.43 dB |
+| q=0.99 | 1.025% | −1.62 dB |
+
+A −6.39 dB floor caps the result below what the model already reaches. Peak is
+the only lossless option, and low spread is the price.
+
+This is **not** the synthetic normalisation bug repeating. There a single
+*global* scale set by dataset-wide outliers squashed every sample into ~4% of
+the range. Here each sample sets its own scale and reaches 0 and 1 at its own
+peak; the low std reflects genuine channel sparsity.
+
+```bash
+python data/prepare_deepmimo.py --samples 30000 --output-dir data/processed_deepmimo
+python models/train.py --data-dir data/processed_deepmimo --compression-ratio 4
+```
+
+---
+
 ## What changed
 
 | File | Change |
