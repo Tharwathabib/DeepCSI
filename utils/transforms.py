@@ -3,20 +3,29 @@ import numpy as np
 
 def spatial_frequency_to_angular_delay(H_sf: np.ndarray) -> np.ndarray:
     """
-    Transform Spatial-Frequency CSI matrix (Nt x Nc complex)
-    to Angular-Delay domain via 2D DFT.
+    Transform Spatial-Frequency CSI (..., Nt, Nc complex) to the Angular-Delay domain.
 
-    H_AD = F_ant * H * F_sub^H  <=> 2D FFT along antenna & subcarrier axes.
+    Antenna axis (-2): forward DFT, mapping a ULA steering vector to an angle bin.
+    Subcarrier axis (-1): INVERSE DFT, mapping a path of delay tau to index tau.
+
+    The direction of the subcarrier transform matters and is not a convention
+    choice. A path of delay tau has frequency response exp(-2j*pi*tau*k/Nc), so a
+    forward DFT along k places it at index Nc-tau -- the far END of the axis.
+    Truncating to the first 32 taps after a forward DFT therefore discards the
+    channel and keeps noise. The inverse DFT places it at index tau, which is
+    what makes delay truncation valid. This also matches CsiNet, which returns
+    to the frequency domain with a forward FFT along the delay axis.
     """
-    return np.fft.fft2(H_sf)
+    return np.fft.fft(np.fft.ifft(H_sf, axis=-1), axis=-2)
 
 
 def angular_delay_to_spatial_frequency(H_ad: np.ndarray) -> np.ndarray:
     """
-    Transform Angular-Delay CSI matrix (Nt x Nc complex)
-    back to Spatial-Frequency domain via 2D inverse DFT.
+    Transform Angular-Delay CSI (..., Nt, Nd complex) back to Spatial-Frequency.
+
+    Exact inverse of spatial_frequency_to_angular_delay.
     """
-    return np.fft.ifft2(H_ad)
+    return np.fft.fft(np.fft.ifft(H_ad, axis=-2), axis=-1)
 
 
 def truncate_delay(H_ad: np.ndarray, max_delay: int = 32) -> np.ndarray:
