@@ -155,10 +155,16 @@ def main():
         print("  WARNING: normalized std is very small. The model will likely "
               "collapse to the mean and score ~0 dB NMSE.")
 
-    # Train / Val / Test Split: 7000 / 1000 / 2000 (70% / 10% / 20%)
-    train_data = normalized_tensor[:7000]
-    val_data = normalized_tensor[7000:8000]
-    test_data = normalized_tensor[8000:]
+    # Train / Val / Test Split: 70% / 10% / 20%.
+    # Computed from the actual sample count, not hardcoded. The previous
+    # 7000/1000/2000 literals only equalled 70/10/20 at exactly 10000 samples;
+    # with --samples 50000 they yielded 7000/1000/42000, silently starving
+    # training to 14% of the data while inflating the test set.
+    n = len(normalized_tensor)
+    n_train, n_val = int(0.7 * n), int(0.1 * n)
+    train_data = normalized_tensor[:n_train]
+    val_data = normalized_tensor[n_train:n_train + n_val]
+    test_data = normalized_tensor[n_train + n_val:]
 
     print(f"Train set shape: {train_data.shape}, dtype={train_data.dtype}")
     print(f"Val set shape:   {val_data.shape}, dtype={val_data.dtype}")
