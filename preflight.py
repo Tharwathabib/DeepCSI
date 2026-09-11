@@ -82,7 +82,15 @@ def main():
 
     # 3. Model Weights & Inference
     weights_dir = Path(os.getenv("WEIGHTS_DIR", "models/weights"))
-    test_tensor = torch.from_numpy(test_data[:10]).to(device)
+    # A random subsample, not test_data[:10]. Per-sample NMSE has a standard
+    # deviation of ~3.5 dB, so ten samples land several dB from the true value:
+    # preflight printed -14.99 dB at CR=4 where the full test set gives -11.22.
+    # A smoke test that prints a dB figure will be read as a result, so it has
+    # to agree with the one in the README. Capped for speed and reported with
+    # its sample count.
+    n_eval = min(len(test_data), 2000)
+    eval_idx = np.random.default_rng(0).choice(len(test_data), n_eval, replace=False)
+    test_tensor = torch.from_numpy(test_data[eval_idx]).to(device)
 
     for cr in [4, 16, 32]:
         w_file = weights_dir / f"deepcsi_cr{cr}.pt"
@@ -114,9 +122,9 @@ def main():
                     recon, test_tensor, norm_params=norm_params
                 ).item()
 
-            check(f"CR={cr} model forward pass & finite NMSE ({nmse_val:.2f} dB)", np.isfinite(nmse_val))
+            check(f"CR={cr} model forward pass & finite NMSE ({nmse_val:.2f} dB, n={n_eval})", np.isfinite(nmse_val))
             check(f"CR={cr} downstream MRT beamforming gain valid ({bf_val*100:.2f}%)", 0.0 <= bf_val <= 1.0)
-            check(f"CR={cr} latent shape matches expected ({2048//cr})", latent.shape == (10, 2048 // cr))
+            check(f"CR={cr} latent shape matches expected ({2048//cr})", latent.shape == (n_eval, 2048 // cr))
         except Exception as e:
             check(f"CR={cr} model verification", False, str(e))
 
