@@ -75,12 +75,37 @@ def augment_angle_shift(batch: torch.Tensor) -> torch.Tensor:
 
     Gives up to 32 distinct views of every training sample at zero cost, which
     is aimed squarely at the 2-4 dB train/val gap.
+
+    IMPORTANT: this is only valid when every angle is equally likely. That holds
+    for the synthetic generator, whose path angles are drawn uniformly. It does
+    NOT hold for a ray-traced scenario with one fixed base station, where users
+    occupy a narrow angular sector -- see angular_concentration() below.
     """
     shifts = torch.randint(0, batch.shape[2], (batch.shape[0],), device=batch.device)
     # torch.roll cannot take per-sample shifts, so gather with rolled indices.
     idx = (torch.arange(batch.shape[2], device=batch.device).unsqueeze(0) - shifts.unsqueeze(1)) % batch.shape[2]
     idx = idx.view(batch.shape[0], 1, batch.shape[2], 1).expand_as(batch)
     return torch.gather(batch, 2, idx)
+
+
+def angular_concentration(data: np.ndarray, offset: float) -> float:
+    """
+    Peak-to-mean ratio of the dataset's average energy profile over angle bins.
+
+    1.0 means energy is spread evenly over all angles, so angle-shift
+    augmentation invents nothing. Large values mean users sit in a narrow
+    sector and rolling them fabricates channels that never occur.
+
+    Measured: synthetic 1.1 (uniform path angles), DeepMIMO O1 TX5/RX2 5.2
+    (one fixed BS, users along a street, dominant angle in 6 bins of 32).
+    Augmenting the latter pinned CR=4 at 0.00 dB for 25 epochs -- the model
+    emitting a constant -- while the same run without it reached -9.11 dB in 12.
+    """
+    sample = np.asarray(data[:4000], dtype=np.float64)
+    h = np.abs((sample[:, 0] - offset) + 1j * (sample[:, 1] - offset))
+    per_angle = h.sum(axis=2)                       # (n, angle)
+    profile = per_angle.mean(axis=0)
+    return float(profile.max() / profile.mean())
 
 
 def build_scheduler(optimizer, name: str, epochs: int, warmup_frac: float = 0.05):
@@ -249,6 +274,14 @@ def main():
 
     criterion = NMSELoss(offset) if args.loss == "nmse" else nn.MSELoss()
     print(f"Loss: {args.loss} | scheduler: {args.scheduler} | augment: {args.augment}")
+    if args.augment:
+        conc = angular_concentration(train_data, offset)
+        print(f"  angular concentration (peak/mean over angle bins): {conc:.1f}")
+        if conc > 2.0:
+            print("  WARNING: this dataset is not angle-shift invariant. Rolling the "
+                  "angle axis\n           fabricates channels from angles that never "
+                  "occur here, and has been\n           measured to cost ~9 dB on "
+                  "DeepMIMO. Consider dropping --augment.")
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = build_scheduler(optimizer, args.scheduler, args.epochs)
 
