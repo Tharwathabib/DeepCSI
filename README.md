@@ -14,7 +14,7 @@ In FDD systems, the gNodeB requires explicit downlink CSI feedback from the User
 
 By exploiting angular-delay domain sparsity, truncating delay taps to $32 \times 32$, and deploying CNN-based autoencoders, **DeepCSI** achieves up to **$96.875\%$ scalar dimension reduction**, outperforming a classical 2D-DCT baseline at every compression ratio tested by an increasing margin as the feedback budget shrinks.
 
-The original $-15\text{ dB}$ NMSE target **is met on real ray-traced data**: $-15.14\text{ dB}$ at CR=4 on DeepMIMO. On the synthetic generator the best measured result is $-11.22\text{ dB}$. See Key Performance Indicators below for both.
+The original $-15\text{ dB}$ NMSE target is **met on both tracks**: $-15.14\text{ dB}$ at CR=4 on real ray-traced DeepMIMO data, and $-17.11\text{ dB}$ on the synthetic generator. DeepCSI also beats **PCA/KLT — the optimal linear compressor — at every compression ratio on synthetic**, and at CR=16 and CR=32 on DeepMIMO. See Key Performance Indicators below.
 
 ```text
 UE / Channel Estimator
@@ -46,30 +46,52 @@ Reconstructed CSI  ──>  Inverse 2D FFT  ──>  Downlink Precoding
 
 ## Key Performance Indicators
 
-Measured on the 2,000-sample synthetic test set, 90 training epochs per model.
-Reproduce with `python data/generate_data.py && python models/train.py -cr {4,16,32} --epochs 90 --patience 25 --weight-decay 1e-5 && python models/evaluate.py`.
+Measured on a 10,000-sample synthetic test set, 35,000 training samples,
+60 epochs per model. Reproduce with:
+```bash
+python data/generate_data.py --samples 50000 --output-dir data/processed_big
+python models/train.py --data-dir data/processed_big -cr {4,16,32} \
+    --epochs 60 --weight-decay 2e-6 --output-dir models/weights_big --results-dir results_big
+python models/evaluate.py --data-dir data/processed_big \
+    --weights-dir models/weights_big --results-dir results_big
+```
 
-`--weight-decay 1e-5` is required to reproduce these figures and is **not** the
-default. The default is 0 because on DeepMIMO a decay of 1e-5 collapses
-training outright — `torch.optim.Adam` adds `weight_decay*w` straight to the
-gradient, and an MSE loss of ~3.7e-4 is small enough to lose that contest. The
-synthetic set is the opposite case: only 7,000 training samples with a 3.63 dB
-train/val gap, so the regularisation is worth 1.48 dB (−11.22 vs −9.74). Pick
-per dataset; `models/train.py` warns if the result looks collapsed.
-
-| Compression Ratio (CR) | Retained Scalars | Scalar Reduction | DeepCSI NMSE | DeepCSI MRT Gain | DCT Baseline NMSE | DCT MRT Gain |
+| Compression Ratio (CR) | Retained | Scalar Reduction | **DeepCSI NMSE** | DeepCSI MRT Gain | PCA | DCT |
 | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **CR = 4** | 512 | **75.00%** | **-11.22 dB** | **93.31%** (-0.30 dB) | -10.92 dB | 91.97% (-0.36 dB) |
-| **CR = 16** | 128 | **93.75%** | **-8.48 dB** | **86.99%** (-0.61 dB) | -4.06 dB | 61.48% (-2.11 dB) |
-| **CR = 32** | 64 | **96.88%** | **-5.31 dB** | **73.29%** (-1.35 dB) | -2.46 dB | 44.41% (-3.52 dB) |
+| **CR = 4** | 512 | **75.00%** | **-17.11 dB** | **98.27%** | -14.03 dB | -10.97 dB |
+| **CR = 16** | 128 | **93.75%** | **-10.97 dB** | **92.69%** | -4.37 dB | -4.08 dB |
+| **CR = 32** | 64 | **96.88%** | **-7.53 dB** | **83.71%** | -2.50 dB | -2.47 dB |
 
-**DeepCSI beats the classical DCT baseline at every compression ratio, and its
-advantage widens as the feedback budget tightens** — +0.3 dB at CR=4, but
-+4.4 dB at CR=16 and +2.9 dB at CR=32. In beamforming terms that is the
-difference between retaining 87% and 61% of maximum MRT power at CR=16. This is
-the expected signature of learned compression: when 512 of 2048 scalars survive,
-a fixed transform is nearly sufficient; at 64 scalars, knowing the channel
-distribution is what matters.
+**DeepCSI beats both baselines at every compression ratio** — +3.1 / +6.6 /
++5.0 dB over PCA, the optimal *linear* compressor, and +6.1 / +6.9 / +5.1 dB
+over DCT. In beamforming terms that is 93% of maximum MRT power at CR=16 where
+PCA retains 63%.
+
+#### Getting the weight decay right was worth 5.9 dB
+
+The earlier figures on this track were **-11.22 / -8.48 / -5.31 dB**. Two
+changes account for the difference, and the second is not obvious:
+
+1. **5× more training data** (7,000 → 35,000 samples). The old run had a 3.63 dB
+   train/val gap — it was memorising.
+2. **Scaling weight decay with dataset size.** `torch.optim.Adam` applies decay
+   *per optimizer step*, so 5× the data means 5× the steps per epoch and 5× the
+   effective regularisation. Keeping `1e-5` on the larger set made results far
+   *worse* (-3 dB, unstable); the scale-corrected `2e-6` gave -17.11 dB.
+
+Measured, CR=4, isolating one variable at a time:
+
+| train samples | weight decay | NMSE |
+| ---: | ---: | ---: |
+| 7,000 | 1e-5 | -11.22 dB |
+| 7,000 | 0 | -9.74 dB |
+| 35,000 | 0 | ~-10.6 dB |
+| 35,000 | 1e-5 | unstable, ~-3 dB |
+| **35,000** | **2e-6** | **-17.11 dB** |
+
+Neither change works without the other. More data alone gains 0.9 dB; the right
+decay for that data size turns it into 5.9 dB. `--optimizer adamw` sidesteps the
+coupling entirely and is the cleaner long-term fix — see `models/train.py`.
 
 ### Results on real ray-traced data (DeepMIMO)
 
