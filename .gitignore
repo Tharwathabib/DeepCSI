@@ -27,13 +27,22 @@ deepmimo_scenarios/
 models/weights/*.pt
 !models/weights/.gitkeep
 
-# Results. Everything under results/ is generated -- metrics, per-epoch logs,
-# figures, ablation sweeps, per-dataset subdirectories. Ignore the lot rather
-# than enumerating extensions, so new output directories do not silently show
-# up as untracked.
+# Results. Generated output is ignored, with one deliberate exception: the CSVs
+# ARE tracked. They are the evidence for every number in the README, they are a
+# few KB of text, and they diff. Without them a reader has to take the tables on
+# trust or spend an hour of CPU reproducing them -- and the whole point of this
+# branch is that the previously published numbers could not be checked.
+# Weights, .npy tensors and figures stay out; they are large and regenerable.
 results/**
 !results/.gitkeep
 !results/figures/.gitkeep
+!results/*.csv
+
+# Alternate dataset tracks, same policy.
+results_deepmimo/**
+!results_deepmimo/*.csv
+results_big/**
+!results_big/*.csv
 
 # Weights for the alternate dataset tracks
 models/weights_deepmimo/

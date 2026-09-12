@@ -1,0 +1,4 @@
+method,compression_ratio,latent_dim,scalar_reduction_percent,nmse_db_mean,nmse_db_std,nmse_db_aggregate,cosine_similarity_rho,beamforming_gain_mean,beamforming_gain_std,beamforming_loss_db,spectral_efficiency_bps_hz,nmse_db_p5,nmse_db_median,nmse_db_p95,nmse_db_worst,encoder_ms_ue,decoder_ms_gnb,inference_ms,encoder_params,decoder_params
+PCA Baseline,4,512,75.0,-15.06,3.24,-13.67,0.978,0.9571,0.0444,-0.19,3.4007,-19.7279,-15.5428,-9.03,-3.8156,0.0429,0.035,0.078,1048576,1048576
+PCA Baseline,16,128,93.75,-4.92,2.31,-4.3,0.7737,0.6286,0.2091,-2.02,2.7634,-8.6365,-5.0505,-0.6505,0.0051,0.0186,0.0194,0.038,262144,262144
+PCA Baseline,32,64,96.88,-2.8,1.7,-2.48,0.623,0.4353,0.217,-3.61,2.2338,-5.565,-2.8522,-0.0396,0.0429,0.0134,0.0229,0.0364,131072,131072

@@ -1,0 +1,7 @@
+variant,flags,best_epoch,train_nmse_db,val_nmse_db,generalisation_gap_db,minutes,delta_vs_baseline_db
+baseline,(defaults),50,-8.24,-7.63,-0.62,6.9,0.0
+nmse_loss,--loss nmse,50,-5.43,-5.2,-0.23,6.3,2.43
+cosine_lr,--scheduler cosine,49,-7.1,-6.05,-1.05,7.2,1.58
+augment,--augment,48,-7.9,-7.85,-0.06,6.1,-0.22
+crnet_encoder,--arch crnet,49,-7.35,-7.05,-0.3,7.2,0.58
+all_combined,--loss nmse --scheduler cosine --augment --arch crnet,50,-2.04,-2.06,0.02,11.8,5.57
