@@ -118,7 +118,35 @@ version of the "learned compression wins when the budget is tight" claim.
 > COST2100 indoor; this is DeepMIMO O1 outdoor. The CR=16 and CR=32 figures
 > here exceed the published ones, but on a different and evidently easier
 > benchmark at high compression — it is a different channel model, not a better
-> model. A like-for-like comparison needs COST2100, which was never obtained.
+> model. COST2100 is a paid dataset and is out of scope for this project, so a
+> like-for-like comparison to the literature is a limitation we accept and
+> state, not outstanding work.
+
+### Quantized feedback — the actual bandwidth claim
+
+Scalar reduction is not compression. The uplink carries **bits**, and a latent
+of 512 float32 values is 16,384 of them. `models/quantize_eval.py` quantizes the
+latent uniformly and measures what each bit budget actually buys. The quantizer
+range is fitted on training latents and ships with the model, so the payload is
+exactly `latent_dim × bits` with no side information.
+
+A full-resolution CSI report is **65,536 bits** (2×32×32 float32).
+
+| Config | Feedback | vs raw | NMSE | MRT gain |
+| :--- | ---: | ---: | ---: | ---: |
+| CR=32 @ 4-bit | 256 bits | **256×** | -7.97 dB | 84.81% |
+| CR=16 @ 4-bit | 512 bits | **128×** | -11.01 dB | 92.38% |
+| **CR=16 @ 6-bit** | **768 bits** | **85×** | **-12.26 dB** | **94.37%** |
+| CR=16 @ 8-bit | 1024 bits | 64× | -12.34 dB | 94.48% |
+| CR=4 @ 4-bit | 2048 bits | 32× | -10.95 dB | 92.21% |
+
+**The scalar compression ratio is the wrong axis.** At any fixed bit budget a
+smaller latent at higher precision beats a larger latent at lower precision:
+CR=4 spends 2048 bits to score -10.95 dB, while CR=16 reaches -12.34 dB on
+*half* that. The sweet spot is **CR=16 at 6 bits — 85× compression for 0.10 dB**
+of loss against unquantized float32.
+
+Reproduce: `python models/quantize_eval.py --data-dir data/processed_deepmimo --weights-dir models/weights_deepmimo`
 
 *Metric definitions: NMSE is $10\log_{10}\left(\mathbb{E}\left[\|\mathbf{h}-\hat{\mathbf{h}}\|^2 / \|\mathbf{h}\|^2\right]\right)$ and MRT beamforming gain is $G = \frac{|\hat{\mathbf{h}}^H \mathbf{h}|^2}{\|\hat{\mathbf{h}}\|^2 \|\mathbf{h}\|^2}$. Both are computed on the **de-offset complex channel**, i.e. after removing the constant that maps zero to 0.5 in the normalized tensor. Measuring them on the raw $[0,1]$ tensor instead inflates NMSE by roughly 35 dB and saturates $G$ near 100% for any model — see `REAL_DATA.md`.*
 
