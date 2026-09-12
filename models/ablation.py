@@ -42,6 +42,13 @@ def main():
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--data-dir", type=str, default="data/processed")
     parser.add_argument("--seed", type=int, default=42)
+    # Pinned explicitly, not inherited. The first version of this sweep ran at
+    # the then-default 1e-5 and every verdict it produced had to be withdrawn:
+    # Adam couples weight decay to the gradient, and the nmse_loss arm's values
+    # are ~2700x larger than the MSE arms', so that one variant was effectively
+    # immune to a decay the others were fighting. 0 puts every arm on the same
+    # footing, which is the only way the comparison means anything.
+    parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--out", type=str, default="results/ablation.csv")
     parser.add_argument("--work-dir", type=str, default="results/_ablation")
     args = parser.parse_args()
@@ -58,6 +65,7 @@ def main():
             "--batch-size", str(args.batch_size),
             "--data-dir", args.data_dir,
             "--seed", str(args.seed),
+            "--weight-decay", str(args.weight_decay),
             "--output-dir", str(work / name),
             "--results-dir", str(work / name),
         ] + extra
