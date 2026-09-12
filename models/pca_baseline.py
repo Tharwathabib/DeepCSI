@@ -118,6 +118,12 @@ def evaluate_pca_baseline(train_data: np.ndarray, test_data: np.ndarray,
             # autoencoder's encoder/decoder parameter counts.
             "encoder_params": k * total_scalars,
             "decoder_params": k * total_scalars,
+            # PCA sends a fixed k coefficients in a fixed order, so like the
+            # autoencoder's latent it owes nothing to say WHICH ones. That is
+            # the structural advantage both hold over DCT's per-sample
+            # magnitude selection.
+            "index_overhead_bits": 0.0,
+            "feedback_bits_at_6bit": float(k * 6),
         })
 
     return pd.DataFrame(results)
