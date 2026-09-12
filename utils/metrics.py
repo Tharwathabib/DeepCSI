@@ -1,3 +1,5 @@
+import warnings
+
 import torch
 import numpy as np
 from typing import Union, Optional
@@ -6,6 +8,45 @@ from typing import Union, Optional
 # ---------------------------------------------------------------------------
 # Normalisation handling
 # ---------------------------------------------------------------------------
+
+def warn_if_offset_data_measured_raw(y_true, offset: float, caller: str) -> bool:
+    """
+    Catch the defect this project was founded on, at the point it happens.
+
+    Every metric here takes norm_params as an OPTIONAL argument and falls back
+    to measuring the raw tensor when it is absent. That fallback is correct for
+    genuinely zero-centred data and catastrophically wrong for the [0,1] data
+    this project actually stores, where a constant 0.5+0.5j DC term inflates
+    NMSE by ~35 dB and pins rho near 1.0 for any output at all. Those were the
+    original -38.45 dB and 99.98% figures.
+
+    Passing norm_params everywhere was the first fix, and it did not hold: one
+    caller was missed, and running it printed -37.61 dB and 99.98% again. So the
+    condition is detected from the data instead of trusted to the caller.
+
+    Offset-normalised data sits inside [0,1] with a mean near 0.5. A de-offset
+    channel is centred near 0. The two are unmistakable, so this warns only on
+    the real mistake. Returns True when it fired, which makes it testable.
+    """
+    if offset != 0.0:
+        return False
+    arr = y_true.detach().cpu().numpy() if hasattr(y_true, "detach") else np.asarray(y_true)
+    if arr.size == 0:
+        return False
+    lo, hi, mean = float(arr.min()), float(arr.max()), float(arr.mean())
+    if lo < -1e-6 or hi > 1.0 + 1e-6 or abs(mean - 0.5) > 0.05:
+        return False
+    warnings.warn(
+        f"{caller}: measuring data that looks offset-normalised "
+        f"(range [{lo:.3f}, {hi:.3f}], mean {mean:.3f}) without norm_params. "
+        "The 0.5 DC term inflates NMSE by roughly 35 dB and saturates rho near "
+        "1.0 for any prediction. Pass norm_params=json.load(<data-dir>/"
+        "norm_params.json).",
+        RuntimeWarning,
+        stacklevel=3,
+    )
+    return True
+
 
 def offset_from_norm_params(norm_params: Optional[dict]) -> float:
     """
@@ -50,6 +91,7 @@ def to_complex_torch(x: torch.Tensor, norm_params: Optional[dict] = None) -> tor
     if x.dim() == 3:
         x = x.unsqueeze(0)
     offset = offset_from_norm_params(norm_params)
+    warn_if_offset_data_measured_raw(x, offset, "to_complex_torch")
     real = x[:, 0, :, :] - offset
     imag = x[:, 1, :, :] - offset
     return torch.complex(real, imag).reshape(x.size(0), -1)
@@ -60,6 +102,7 @@ def to_complex_numpy(x: np.ndarray, norm_params: Optional[dict] = None) -> np.nd
     if x.ndim == 3:
         x = x[np.newaxis, ...]
     offset = offset_from_norm_params(norm_params)
+    warn_if_offset_data_measured_raw(x, offset, "to_complex_numpy")
     real = x[:, 0, :, :] - offset
     imag = x[:, 1, :, :] - offset
     return (real + 1j * imag).reshape(len(x), -1)
@@ -134,6 +177,7 @@ def nmse_per_sample_db(
         numerator = np.sum(np.abs(h_true - h_pred) ** 2, axis=-1)
         denominator = np.sum(np.abs(h_true) ** 2, axis=-1) + 1e-10
     else:
+        warn_if_offset_data_measured_raw(y_true, 0.0, "nmse_per_sample_db")
         numerator = np.sum((y_true - y_pred) ** 2, axis=(1, 2, 3))
         denominator = np.sum(y_true ** 2, axis=(1, 2, 3)) + 1e-10
 
@@ -175,6 +219,7 @@ def nmse_db_aggregate(
         numerator = torch.sum(torch.abs(h_true - h_pred) ** 2, dim=-1)
         denominator = torch.sum(torch.abs(h_true) ** 2, dim=-1) + 1e-10
     else:
+        warn_if_offset_data_measured_raw(y_true, 0.0, "nmse_db_aggregate")
         numerator = torch.sum((y_true - y_pred) ** 2, dim=(1, 2, 3))
         denominator = torch.sum(y_true ** 2, dim=(1, 2, 3)) + 1e-10
 
@@ -197,6 +242,7 @@ def nmse_db_aggregate_numpy(
         numerator = np.sum(np.abs(h_true - h_pred) ** 2, axis=-1)
         denominator = np.sum(np.abs(h_true) ** 2, axis=-1) + 1e-10
     else:
+        warn_if_offset_data_measured_raw(y_true, 0.0, "nmse_db_aggregate_numpy")
         numerator = np.sum((y_true - y_pred) ** 2, axis=(1, 2, 3))
         denominator = np.sum(y_true ** 2, axis=(1, 2, 3)) + 1e-10
 

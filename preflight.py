@@ -12,7 +12,7 @@ if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
 from utils.metrics import nmse_db_aggregate, beamforming_gain_torch
-from models.csi_autoencoder import CSIAutoencoder
+from models.csi_autoencoder import CSIAutoencoder, build_from_checkpoint
 
 
 def check(description: str, condition: bool, err_msg: str = ""):
@@ -99,10 +99,8 @@ def main():
 
         try:
             checkpoint = torch.load(w_file, map_location=device, weights_only=False)
-            refine_widths = tuple(checkpoint.get("refine_widths", (8, 16)))
-            model = CSIAutoencoder(compression_ratio=cr, refine_widths=refine_widths).to(device)
-            model.load_state_dict(checkpoint["model_state_dict"])
-            model.eval()
+            # Shared helper so arch is honoured alongside refine_widths.
+            model = build_from_checkpoint(checkpoint, cr, device)
 
             # Weights trained on one dataset and tested against another produce
             # nonsense; catch it here rather than during the demo.

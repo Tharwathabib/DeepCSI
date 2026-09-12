@@ -25,7 +25,7 @@ from utils.metrics import (
     spectral_efficiency,
 )
 
-from models.csi_autoencoder import CSIAutoencoder
+from models.csi_autoencoder import CSIAutoencoder, build_from_checkpoint
 from models.dct_baseline import evaluate_dct_baseline
 from models.pca_baseline import evaluate_pca_baseline
 
@@ -299,11 +299,9 @@ def main():
 
         checkpoint = torch.load(weight_path, map_location=device, weights_only=False)
 
-        # Rebuild with the architecture the checkpoint was trained with, otherwise
-        # load_state_dict fails whenever the decoder widths differ from the default.
-        refine_widths = tuple(checkpoint.get("refine_widths", (8, 16)))
-        model = CSIAutoencoder(compression_ratio=cr, refine_widths=refine_widths).to(device)
-        model.load_state_dict(checkpoint["model_state_dict"])
+        # Rebuild through the shared helper: both refine_widths and arch have to
+        # come from the checkpoint, or a crnet model cannot be evaluated at all.
+        model = build_from_checkpoint(checkpoint, cr, device)
 
         # Warn loudly if the weights were trained on a different dataset than the
         # test set currently loaded -- silently mixing them produces nonsense.

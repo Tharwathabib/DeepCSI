@@ -152,14 +152,36 @@ def evaluate_dct_baseline(test_data: np.ndarray, norm_params: dict = None, snr_d
 
 
 def main():
-    test_path = Path("data/processed/test.npy")
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(description="2D DCT baseline at DeepCSI's scalar budgets.")
+    parser.add_argument("--data-dir", default="data/processed")
+    parser.add_argument("--results-dir", default="results")
+    args = parser.parse_args()
+
+    data_dir = Path(args.data_dir)
+    test_path = data_dir / "test.npy"
     if not test_path.exists():
         raise FileNotFoundError(f"Test dataset not found at {test_path}. Run data/generate_data.py first.")
 
-    test_data = np.load(test_path)
-    df_dct = evaluate_dct_baseline(test_data)
+    # Load the normalisation metadata rather than defaulting to None. Without it
+    # every metric below is measured on the raw [0,1] tensor, whose 0.5 DC term
+    # inflates NMSE by ~35 dB and saturates the beamforming gain: this entry
+    # point printed -37.61 dB and 99.98% until the file was read here, which is
+    # within a dB of the discredited figures the project started with.
+    norm_path = data_dir / "norm_params.json"
+    if not norm_path.exists():
+        raise FileNotFoundError(
+            f"{norm_path} not found. It carries the offset the metrics need; "
+            "without it this script reports numbers ~35 dB too optimistic."
+        )
+    norm_params = json.loads(norm_path.read_text())
 
-    output_dir = Path("results")
+    test_data = np.load(test_path)
+    df_dct = evaluate_dct_baseline(test_data, norm_params=norm_params)
+
+    output_dir = Path(args.results_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     dct_csv_path = output_dir / "dct_baseline_metrics.csv"
     df_dct.to_csv(dct_csv_path, index=False)

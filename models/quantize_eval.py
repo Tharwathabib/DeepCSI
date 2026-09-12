@@ -22,7 +22,7 @@ root_dir = Path(__file__).resolve().parent.parent
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
-from models.csi_autoencoder import CSIAutoencoder
+from models.csi_autoencoder import CSIAutoencoder, build_from_checkpoint
 from utils.metrics import nmse_db_aggregate_numpy, beamforming_gain_numpy
 from utils.quantize import fit_range, uniform_quantize, payload_bits, RAW_CSI_BITS
 
@@ -55,13 +55,7 @@ def main():
             print(f"skipping CR={cr}: {ckpt_path} not found")
             continue
         ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-        model = CSIAutoencoder(
-            compression_ratio=cr,
-            refine_widths=tuple(ckpt.get("refine_widths", (8, 16))),
-            arch=ckpt.get("arch", "csinet"),
-        )
-        model.load_state_dict(ckpt["model_state_dict"])
-        model.eval()
+        model = build_from_checkpoint(ckpt, cr, "cpu")
 
         with torch.no_grad():
             z_fit = model.encoder(torch.from_numpy(fit_src)).numpy()
@@ -78,8 +72,8 @@ def main():
                 beamforming_gain_numpy(recon[i], test[i], norm_params=norm_params)
                 for i in range(len(test))
             ]))
-            n_bits = latent_bits = (model.latent_dim * 32 if bits is None
-                                    else payload_bits(model.latent_dim, bits))
+            n_bits = (model.latent_dim * 32 if bits is None
+                      else payload_bits(model.latent_dim, bits))
 
             rows.append({
                 "compression_ratio": cr,

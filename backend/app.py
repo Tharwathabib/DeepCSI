@@ -18,7 +18,7 @@ root_dir = Path(__file__).resolve().parent.parent
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
-from models.csi_autoencoder import CSIAutoencoder
+from models.csi_autoencoder import CSIAutoencoder, build_from_checkpoint
 from utils.metrics import beamforming_gain_numpy, beamforming_loss_db, nmse_db_aggregate
 
 # Global in-memory storage for test dataset, normalization metadata, and loaded models
@@ -57,13 +57,11 @@ def load_resources():
         if weight_path.exists():
             try:
                 checkpoint = torch.load(weight_path, map_location=DEVICE, weights_only=False)
-                # Rebuild with the architecture the checkpoint was trained with;
-                # decoder RefineNet width is configurable, so assuming the default
-                # breaks load_state_dict for any non-default checkpoint.
-                refine_widths = tuple(checkpoint.get("refine_widths", (8, 16)))
-                model = CSIAutoencoder(compression_ratio=cr, refine_widths=refine_widths).to(DEVICE)
-                model.load_state_dict(checkpoint["model_state_dict"])
-                model.eval()
+                # Rebuild through the shared helper so both refine_widths AND
+                # arch come from the checkpoint. Reading only the first, as this
+                # did, makes any crnet checkpoint fail load_state_dict -- and the
+                # except below turns that into a log line rather than a failure.
+                model = build_from_checkpoint(checkpoint, cr, DEVICE)
                 LOADED_MODELS[cr] = model
                 source = checkpoint.get("data_source", "unknown")
                 print(f"[Backend Startup] Loaded model weight for CR={cr} on {DEVICE} "
@@ -162,6 +160,20 @@ def run_model_inference(sample_np: np.ndarray, compression_ratio: int):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Model weights for CR={compression_ratio} not loaded. "
                    f"Expected file '{weights_file}'."
+        )
+
+    # Refuse rather than report. Every metric below is measured on the de-offset
+    # channel, and without NORM_PARAMS the offset is taken as 0: NMSE comes out
+    # ~35 dB too optimistic and the beamforming gain saturates near 100% for any
+    # output at all. Startup only logged a warning and then served those numbers
+    # to the dashboard, which is the failure mode this whole branch exists to
+    # stamp out -- a wrong answer is worse than no answer.
+    if NORM_PARAMS is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Normalisation metadata not loaded, so NMSE and beamforming "
+                   "gain cannot be computed correctly. Set DATA_DIR to a folder "
+                   "containing norm_params.json and restart the API.",
         )
 
     model = LOADED_MODELS[compression_ratio]

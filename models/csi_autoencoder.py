@@ -183,3 +183,27 @@ class CSIAutoencoder(nn.Module):
         latent = self.encoder(x)
         reconstruction = self.decoder(latent)
         return reconstruction, latent
+
+
+def build_from_checkpoint(checkpoint: dict, compression_ratio: int, device="cpu") -> "CSIAutoencoder":
+    """
+    Rebuild the exact architecture a checkpoint was trained with, then load it.
+
+    Three separate call sites -- the API, the evaluator and preflight -- each
+    read `refine_widths` from the checkpoint but ignored `arch`, so any model
+    trained with `--arch crnet` (which the ablation produces) could not be
+    loaded by any of them. load_state_dict raises on the shape mismatch, and in
+    the backend that exception is caught and logged, which leaves the model
+    quietly missing from /health rather than failing startup outright.
+
+    Centralising the reconstruction is the fix: one place now knows how to turn
+    a checkpoint back into a model, so the fields cannot drift apart again.
+    """
+    model = CSIAutoencoder(
+        compression_ratio=compression_ratio,
+        refine_widths=tuple(checkpoint.get("refine_widths", (8, 16))),
+        arch=checkpoint.get("arch", "csinet"),
+    ).to(device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.eval()
+    return model

@@ -13,6 +13,18 @@ if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
 from backend.app import LOADED_MODELS, app
+
+# The metrics are only meaningful on the de-offset channel, and the API now
+# refuses to compute them without this. Tests previously left it None, which
+# silently measured the raw [0,1] tensor -- and one assertion below was
+# passing only because of the saturation that caused.
+NORM = {"scheme": "csinet_offset", "offset": 0.5, "min": -0.5, "max": 0.5}
+
+
+@pytest.fixture(autouse=True)
+def _norm_params(monkeypatch):
+    monkeypatch.setattr("backend.app.NORM_PARAMS", NORM)
+
 from models.csi_autoencoder import CSIAutoencoder
 
 client = TestClient(app)
@@ -68,7 +80,14 @@ def test_predict_with_mocked_model(monkeypatch, tmp_path):
     assert "beamforming_gain_percent" in data
     assert 0.0 <= data["beamforming_gain_percent"] <= 100.0
     assert "beamforming_loss_db" in data
-    assert data["beamforming_loss_db"] <= 0.01
+    # An UNTRAINED model reconstructing a random tensor must not look good.
+    # This previously asserted <= 0.01 dB, which only held because the metric
+    # was measured without the offset and saturated near 100% for any output.
+    assert data["beamforming_loss_db"] <= 0.0
+    assert data["beamforming_gain_percent"] < 99.0, (
+        "an untrained model scored near-perfect beamforming gain -- the "
+        "offset is not being removed"
+    )
     assert len(data["original_matrix_real"]) == 32
     assert len(data["reconstructed_matrix_real"]) == 32
 
