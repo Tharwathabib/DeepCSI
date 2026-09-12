@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+from math import lgamma, log
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -56,6 +57,23 @@ def compress_reconstruct_dct_sample(sample_2ch: np.ndarray, retained_scalars: in
     recon_imag = idctn(truncated_coeff[1], norm="ortho")
 
     return np.stack([recon_real, recon_imag], axis=0)
+
+
+def index_overhead_bits(n_total: int, k: int) -> float:
+    """
+    Bits needed to say WHICH k of n_total coefficients were kept.
+
+    DCT picks its k coefficients per sample by magnitude, so the receiver cannot
+    know their positions -- unlike a fixed-size latent vector, whose meaning is
+    positional and costs nothing to address. Counting only the k values, as this
+    baseline originally did, understates its feedback by more than the values
+    themselves at small k.
+
+    Uses log2(n choose k), the information-theoretic floor for an optimal
+    combinatorial encoder. A practical scheme does worse, so this is the most
+    generous accounting DCT can be given.
+    """
+    return (lgamma(n_total + 1) - lgamma(k + 1) - lgamma(n_total - k + 1)) / log(2.0)
 
 
 def evaluate_dct_baseline(test_data: np.ndarray, norm_params: dict = None, snr_db: float = 10.0):
@@ -123,6 +141,11 @@ def evaluate_dct_baseline(test_data: np.ndarray, norm_params: dict = None, snr_d
             # The DCT transform has no learned parameters and no separate
             # encoder/decoder halves, so only a combined per-sample cost exists.
             "inference_ms": round(elapsed_ms, 3),
+            # Real feedback cost at 6 bits per retained value, the setting where
+            # DeepCSI loses only 0.10 dB to float32. The index term is what the
+            # original comparison omitted.
+            "index_overhead_bits": round(index_overhead_bits(total_scalars, retained), 0),
+            "feedback_bits_at_6bit": round(retained * 6 + index_overhead_bits(total_scalars, retained), 0),
         })
 
     return pd.DataFrame(results)

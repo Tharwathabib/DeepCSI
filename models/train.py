@@ -232,6 +232,8 @@ def main():
                         help="cosine adds linear warmup then cosine annealing.")
     parser.add_argument("--augment", action="store_true",
                         help="Random circular shift along the angle axis.")
+    parser.add_argument("--optimizer", choices=["adam", "adamw"], default="adam",
+                        help="adamw decouples weight decay so it cannot swamp a small loss.")
     parser.add_argument("--arch", choices=["csinet", "crnet"], default="csinet",
                         help="crnet uses a multi-resolution encoder (1x9/9x1/3x3 branches).")
     args = parser.parse_args()
@@ -302,7 +304,13 @@ def main():
                   "angle axis\n           fabricates channels from angles that never "
                   "occur here, and has been\n           measured to cost ~9 dB on "
                   "DeepMIMO. Consider dropping --augment.")
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    # AdamW decouples the decay: it is applied to the weights directly instead of
+    # being added to the gradient, so it cannot out-shout a small loss the way
+    # Adam's coupled decay does. Offered as an option rather than swapped in,
+    # because changing the optimiser invalidates every measured number in the
+    # README and the two are not interchangeable at the same weight_decay value.
+    opt_cls = torch.optim.AdamW if args.optimizer == "adamw" else torch.optim.Adam
+    optimizer = opt_cls(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = build_scheduler(optimizer, args.scheduler, args.epochs)
 
     scaler = None

@@ -148,6 +148,24 @@ of loss against unquantized float32.
 
 Reproduce: `python models/quantize_eval.py --data-dir data/processed_deepmimo --weights-dir models/weights_deepmimo`
 
+#### The DCT baseline, counted fairly
+
+DCT picks its $K$ coefficients per sample by magnitude, so the receiver has to
+be told *which* ones — a cost the original comparison ignored. A fixed-size
+latent pays nothing for this, because its meaning is positional. Charging DCT
+the information-theoretic floor $\log_2\binom{2048}{K}$ (generous; a real
+encoder does worse):
+
+| Method | Values @6-bit | Index | **Total** | NMSE |
+| :--- | ---: | ---: | ---: | ---: |
+| DCT K=128 | 768 | 686 | **1454 bits** | -1.80 dB |
+| DCT K=64 | 384 | 407 | **791 bits** | -0.95 dB |
+| **DeepCSI CR=16 @6-bit** | 768 | 0 | **768 bits** | **-12.26 dB** |
+
+At a matched budget — 791 bits for DCT against 768 for DeepCSI — the learned
+codec is **11.3 dB ahead**. The index overhead is why: at $K=64$ it is more than
+half of DCT's payload.
+
 *Metric definitions: NMSE is $10\log_{10}\left(\mathbb{E}\left[\|\mathbf{h}-\hat{\mathbf{h}}\|^2 / \|\mathbf{h}\|^2\right]\right)$ and MRT beamforming gain is $G = \frac{|\hat{\mathbf{h}}^H \mathbf{h}|^2}{\|\hat{\mathbf{h}}\|^2 \|\mathbf{h}\|^2}$. Both are computed on the **de-offset complex channel**, i.e. after removing the constant that maps zero to 0.5 in the normalized tensor. Measuring them on the raw $[0,1]$ tensor instead inflates NMSE by roughly 35 dB and saturates $G$ near 100% for any model — see `REAL_DATA.md`.*
 
 > **Scope:** these numbers come from the synthetic 3GPP-*inspired* generator, not
