@@ -136,13 +136,12 @@ PCA is performing near-lossless linear reconstruction. Where the latent
 genuinely binds, the nonlinear model is far ahead. That crossover is the honest
 version of the "learned compression wins when the budget is tight" claim.
 
-> **Not comparable to published CsiNet/CRNet numbers.** Those are measured on
-> COST2100 indoor; this is DeepMIMO O1 outdoor. The CR=16 and CR=32 figures
-> here exceed the published ones, but on a different and evidently easier
-> benchmark at high compression — it is a different channel model, not a better
-> model. COST2100 is a paid dataset and is out of scope for this project, so a
-> like-for-like comparison to the literature is a limitation we accept and
-> state, not outstanding work.
+> **Not comparable to published CsiNet/CRNet numbers.** Those are measured on a
+> different indoor benchmark; this is DeepMIMO O1 outdoor. The CR=16 and CR=32
+> figures here exceed the published ones, but on a different and evidently
+> easier benchmark at high compression — a different channel model, not a better
+> model. Running on the literature's own benchmark is out of scope, so this is a
+> limitation we accept and state, not outstanding work.
 
 ### Quantized feedback — the actual bandwidth claim
 

@@ -34,10 +34,9 @@ from models.pca_baseline import evaluate_pca_baseline
 SNR_DB = 10.0
 
 # Published CsiNet/CRNet reference values used to sit here and were appended to
-# the results table when the dataset was COST2100. That dataset is paid and out
-# of scope, so the branch could never fire and the columns could never be a
-# like-for-like comparison -- those numbers are measured on COST2100 indoor and
-# this project measures DeepMIMO O1 outdoor. Printing them beside our own would
+# the results table. They are measured on a different indoor benchmark that is
+# out of scope for this project, so the columns could never be a like-for-like
+# comparison against DeepMIMO O1 outdoor. Printing them beside our own would
 # invite exactly the comparison the README says cannot be made, so they are
 # gone rather than dormant.
 

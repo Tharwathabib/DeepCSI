@@ -389,7 +389,7 @@ anything, and reports the same NMSE the README quotes.
   coefficients but never pays for transmitting *which* K (~11 bits each at
   K=128), so its real feedback cost is understated versus a fixed-size latent.
 - **No comparison on a shared published benchmark.** CsiNet and CRNet report on
-  COST2100, which is a paid dataset and out of scope here. Our DeepMIMO figures
+  a different indoor benchmark, which is out of scope here. Our DeepMIMO figures
   exceed the published ones at CR=16 and CR=32, but that is a different and
   evidently easier benchmark, not a better model. This is an accepted limitation,
   not outstanding work.
