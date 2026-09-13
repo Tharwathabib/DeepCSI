@@ -14,13 +14,19 @@ def test_processed_dataset_shapes_and_types():
     val = np.load(data_dir / "val.npy")
     test = np.load(data_dir / "test.npy")
 
-    assert train.shape == (7000, 2, 32, 32)
-    assert val.shape == (1000, 2, 32, 32)
-    assert test.shape == (2000, 2, 32, 32)
+    # Per-sample geometry is fixed; the sample COUNT is not. Asserting
+    # (7000, 2, 32, 32) hardcoded the size of one particular generator run, which
+    # is the same defect that made generate_data.py slice [:7000] under a comment
+    # claiming 70/10/20. Assert the contract instead: the tensor shape, the
+    # dtype, and the split proportions at whatever size was generated.
+    for name, arr in (("train", train), ("val", val), ("test", test)):
+        assert arr.ndim == 4 and arr.shape[1:] == (2, 32, 32), f"{name} has shape {arr.shape}"
+        assert arr.dtype == np.float32, f"{name} is {arr.dtype}, expected float32"
 
-    assert train.dtype == np.float32
-    assert val.dtype == np.float32
-    assert test.dtype == np.float32
+    total = len(train) + len(val) + len(test)
+    assert len(train) == pytest.approx(0.7 * total, abs=1)
+    assert len(val) == pytest.approx(0.1 * total, abs=1)
+    assert len(test) == pytest.approx(0.2 * total, abs=2)
 
 
 def test_normalization_range():

@@ -17,7 +17,6 @@ data/processed/*.json
 # Real-data track: DeepMIMO tensors are multi-hundred-MB, regenerate with
 # python data/prepare_deepmimo.py
 data/processed_deepmimo/
-data/processed_big/
 
 # DeepMIMO scenario cache: 2.4 GB zip plus extracted ray-tracing data.
 # Re-fetch with deepmimo.download('o1_3p5').
@@ -40,15 +39,12 @@ results/*
 results/figures/*
 !results/figures/.gitkeep
 
-# Alternate dataset tracks, same policy.
+# Alternate dataset track, same policy.
 results_deepmimo/**
 !results_deepmimo/*.csv
-results_big/**
-!results_big/*.csv
 
-# Weights for the alternate dataset tracks
+# Weights for the alternate dataset track
 models/weights_deepmimo/
-models/weights_big/
 
 # IDE / OS
 .vscode/

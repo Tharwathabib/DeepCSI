@@ -47,13 +47,12 @@ Reconstructed CSI  ──>  Inverse 2D FFT  ──>  Downlink Precoding
 ## Key Performance Indicators
 
 Measured on a 10,000-sample synthetic test set, 35,000 training samples,
-60 epochs per model. Reproduce with:
+60 epochs per model. **This is the default track** — `preflight.py`, the API and
+the dashboard all read it with no environment variables set. Reproduce with:
 ```bash
-python data/generate_data.py --samples 50000 --output-dir data/processed_big
-python models/train.py --data-dir data/processed_big -cr {4,16,32} \
-    --epochs 60 --weight-decay 2e-6 --output-dir models/weights_big --results-dir results_big
-python models/evaluate.py --data-dir data/processed_big \
-    --weights-dir models/weights_big --results-dir results_big
+python data/generate_data.py --samples 50000
+python models/train.py -cr {4,16,32} --epochs 60 --weight-decay 2e-6
+python models/evaluate.py
 ```
 
 | Compression Ratio (CR) | Retained | Scalar Reduction | **DeepCSI NMSE** | DeepCSI MRT Gain | PCA | DCT |
