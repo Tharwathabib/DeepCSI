@@ -13,6 +13,18 @@ if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
 from backend.app import LOADED_MODELS, app
+
+# The metrics are only meaningful on the de-offset channel, and the API now
+# refuses to compute them without this. Tests previously left it None, which
+# silently measured the raw [0,1] tensor -- and one assertion below was
+# passing only because of the saturation that caused.
+NORM = {"scheme": "csinet_offset", "offset": 0.5, "min": -0.5, "max": 0.5}
+
+
+@pytest.fixture(autouse=True)
+def _norm_params(monkeypatch):
+    monkeypatch.setattr("backend.app.NORM_PARAMS", NORM)
+
 from models.csi_autoencoder import CSIAutoencoder
 
 client = TestClient(app)
@@ -68,7 +80,19 @@ def test_predict_with_mocked_model(monkeypatch, tmp_path):
     assert "beamforming_gain_percent" in data
     assert 0.0 <= data["beamforming_gain_percent"] <= 100.0
     assert "beamforming_loss_db" in data
-    assert data["beamforming_loss_db"] <= 0.01
+    # An UNTRAINED model reconstructing a random tensor must not look good.
+    # The previous assertion (<= 0.01 dB) held only because the metric was
+    # measured without the offset and saturated near 100% for any output.
+    # `<= 0.0` is no better: gain is in [0,1] so 10*log10(gain) is always <= 0,
+    # and the check can never fail. Assert something the bug would break.
+    assert data["beamforming_loss_db"] < -0.05, (
+        "an untrained model showed near-zero beamforming loss -- the offset is "
+        "not being removed"
+    )
+    assert data["beamforming_gain_percent"] < 99.0, (
+        "an untrained model scored near-perfect beamforming gain -- the "
+        "offset is not being removed"
+    )
     assert len(data["original_matrix_real"]) == 32
     assert len(data["reconstructed_matrix_real"]) == 32
 
@@ -102,6 +126,63 @@ def test_predict_with_custom_matrix():
     assert len(data["original_matrix_imag"]) == 32
     assert len(data["reconstructed_matrix_real"]) == 32
     assert len(data["reconstructed_matrix_imag"]) == 32
+
+
+def test_per_sample_scheme_round_trips_through_predict(monkeypatch):
+    """
+    DeepMIMO is normalised per sample by peak and records min/max of -0.5/+0.5
+    only to encode the offset convention. The endpoint must scale by the sample's
+    own peak: applying that 1.0 span to a raw matrix maps everything to ~0.5, a
+    constant, and denormalises the reply by the wrong factor. Only reachable with
+    a per-sample norm_params, so the other tests never touched this branch.
+    """
+    monkeypatch.setattr("backend.app.NORM_PARAMS", {
+        "offset": 0.5, "min": -0.5, "max": 0.5, "normalisation": "per_sample_peak",
+    })
+    if 16 not in LOADED_MODELS:
+        m = CSIAutoencoder(compression_ratio=16)
+        m.eval()
+        LOADED_MODELS[16] = m
+
+    # Physical scale, like a real ray-traced channel -- far outside [0,1].
+    rng = np.random.default_rng(0)
+    payload = {
+        "matrix_real": rng.normal(scale=2e-5, size=(32, 32)).tolist(),
+        "matrix_imag": rng.normal(scale=2e-5, size=(32, 32)).tolist(),
+        "compression_ratio": 16,
+        "auto_normalize": True,
+    }
+    response = client.post("/predict", json=payload)
+    assert response.status_code == 200, response.text
+    data = response.json()
+
+    # The reply comes back at the input's physical scale, not left near 0.5 and
+    # not rescaled by the meaningless global span.
+    recon = np.array(data["reconstructed_matrix_real"])
+    assert np.abs(recon).max() < 1e-3, "output was not returned to the input's scale"
+    assert np.isfinite(data["nmse_db"])
+
+
+def test_predict_rejects_unnormalised_input_when_auto_normalize_is_off():
+    """
+    The metrics subtract the 0.5 offset unconditionally, so a zero-centred matrix
+    would have an offset removed that was never applied -- inflating the NMSE
+    denominator and reporting a too-optimistic number instead of failing.
+    """
+    if 16 not in LOADED_MODELS:
+        m = CSIAutoencoder(compression_ratio=16)
+        m.eval()
+        LOADED_MODELS[16] = m
+
+    payload = {
+        "matrix_real": np.random.uniform(-1, 1, (32, 32)).tolist(),
+        "matrix_imag": np.random.uniform(-1, 1, (32, 32)).tolist(),
+        "compression_ratio": 16,
+        "auto_normalize": False,
+    }
+    response = client.post("/predict", json=payload)
+    assert response.status_code == 422
+    assert "0,1" in response.json()["detail"]
 
 
 def test_predict_with_custom_matrix_invalid_shape():

@@ -11,8 +11,8 @@ root_dir = Path(__file__).resolve().parent
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
-from utils.metrics import nmse_db, beamforming_gain_torch
-from models.csi_autoencoder import CSIAutoencoder
+from utils.metrics import nmse_db_aggregate, beamforming_gain_torch
+from models.csi_autoencoder import CSIAutoencoder, build_from_checkpoint
 
 
 def check(description: str, condition: bool, err_msg: str = ""):
@@ -49,63 +49,112 @@ def main():
     print(f"       Info: PyTorch {torch.__version__} | Device: {device}")
 
     # 2. Dataset Files & Shapes
-    data_dir = Path("data/processed")
+    # DATA_DIR / WEIGHTS_DIR match the environment variables the backend reads,
+    # so the same settings drive preflight and the running API.
+    data_dir = Path(os.getenv("DATA_DIR", "data/processed"))
+    print(f"       Info: data dir = {data_dir}")
     train_p = data_dir / "train.npy"
     val_p = data_dir / "val.npy"
     test_p = data_dir / "test.npy"
     norm_p = data_dir / "norm_params.json"
 
     check("Dataset files exist", train_p.exists() and val_p.exists() and test_p.exists() and norm_p.exists(),
-          "Missing dataset. Run: python data/generate_data.py")
+          "Missing dataset. Run one of:\n"
+          "         python data/generate_data.py --samples 50000   (synthetic, default track)\n"
+          "         python data/prepare_deepmimo.py               (real ray-traced)")
 
     train_data = np.load(train_p)
     val_data = np.load(val_p)
     test_data = np.load(test_p)
 
-    check("Train shape is (7000, 2, 32, 32)", train_data.shape == (7000, 2, 32, 32))
-    check("Val shape is (1000, 2, 32, 32)", val_data.shape == (1000, 2, 32, 32))
-    check("Test shape is (2000, 2, 32, 32)", test_data.shape == (2000, 2, 32, 32))
+    # Sample counts differ between the synthetic and DeepMIMO sets, so
+    # only the per-sample geometry is fixed.
+    for name, arr in (("Train", train_data), ("Val", val_data), ("Test", test_data)):
+        check(f"{name} shape is (N, 2, 32, 32) [N={len(arr)}]",
+              arr.ndim == 4 and arr.shape[1:] == (2, 32, 32))
     check("Data dtype is float32", train_data.dtype == np.float32)
 
     with open(norm_p, "r") as f:
         norm_params = json.load(f)
     check("Normalization metadata present", "min" in norm_params and "max" in norm_params)
+    print(f"       Info: source = {norm_params.get('source', 'synthetic')} | "
+          f"scheme = {norm_params.get('scheme', 'minmax')}")
 
     # 3. Model Weights & Inference
-    weights_dir = Path("models/weights")
-    test_tensor = torch.from_numpy(test_data[:10]).to(device)
+    weights_dir = Path(os.getenv("WEIGHTS_DIR", "models/weights"))
+    # A random subsample, not test_data[:10]. Per-sample NMSE has a standard
+    # deviation of ~3.5 dB, so ten samples land several dB from the true value:
+    # preflight printed -14.99 dB at CR=4 where the full test set gives -11.22.
+    # A smoke test that prints a dB figure will be read as a result, so it has
+    # to agree with the one in the README. Capped for speed and reported with
+    # its sample count.
+    n_eval = min(len(test_data), 2000)
+    eval_idx = np.random.default_rng(0).choice(len(test_data), n_eval, replace=False)
+    test_tensor = torch.from_numpy(test_data[eval_idx]).to(device)
 
     for cr in [4, 16, 32]:
         w_file = weights_dir / f"deepcsi_cr{cr}.pt"
+        # Quote the flags the published figures were trained with. A bare
+        # `train.py -cr 4` inherits --epochs 30 and --weight-decay 0, which lands
+        # ~6.5 dB short on the default track, and the resulting weights then make
+        # this same preflight print a number that disagrees with the README.
         check(f"CR={cr} weight file exists ({w_file.name})", w_file.exists(),
-              f"Missing model weights. Run: python models/train.py --compression-ratio {cr}")
+              f"Missing model weights. Run:\n"
+              f"         python models/train.py --compression-ratio {cr} "
+              f"--epochs 60 --weight-decay 2e-6\n"
+              f"         (~35 min per ratio on CPU; see README for the DeepMIMO track's flags)")
 
         try:
-            model = CSIAutoencoder(compression_ratio=cr).to(device)
-            checkpoint = torch.load(w_file, map_location=device)
-            model.load_state_dict(checkpoint["model_state_dict"])
-            model.eval()
+            checkpoint = torch.load(w_file, map_location=device, weights_only=False)
+            # Shared helper so arch is honoured alongside refine_widths.
+            model = build_from_checkpoint(checkpoint, cr, device)
+
+            # Weights trained on one dataset and tested against another produce
+            # nonsense; catch it here rather than during the demo.
+            ckpt_source = checkpoint.get("data_source", "unknown")
+            data_source = norm_params.get("source", "unknown")
+            if ckpt_source != "unknown" and data_source != "unknown":
+                check(f"CR={cr} weights match dataset ({ckpt_source})",
+                      ckpt_source == data_source,
+                      f"Weights trained on '{ckpt_source}' but data is '{data_source}'.")
 
             with torch.no_grad():
                 recon, latent = model(test_tensor)
-                nmse_val = nmse_db(recon, test_tensor).item()
-                bf_val = beamforming_gain_torch(recon, test_tensor).item()
+                # Measured on the de-offset channel; without norm_params these
+                # are inflated by ~35 dB and rho saturates near 1.0.
+                nmse_val = nmse_db_aggregate(recon, test_tensor, norm_params).item()
+                bf_val = beamforming_gain_torch(
+                    recon, test_tensor, norm_params=norm_params
+                ).item()
 
-            check(f"CR={cr} model forward pass & finite NMSE ({nmse_val:.2f} dB)", np.isfinite(nmse_val))
+            check(f"CR={cr} model forward pass & finite NMSE ({nmse_val:.2f} dB, n={n_eval})", np.isfinite(nmse_val))
             check(f"CR={cr} downstream MRT beamforming gain valid ({bf_val*100:.2f}%)", 0.0 <= bf_val <= 1.0)
-            check(f"CR={cr} latent shape matches expected ({2048//cr})", latent.shape == (10, 2048 // cr))
+            check(f"CR={cr} latent shape matches expected ({2048//cr})", latent.shape == (n_eval, 2048 // cr))
         except Exception as e:
             check(f"CR={cr} model verification", False, str(e))
 
     # 4. Optional Backend API Reachability
+    api_url = os.getenv("DEEPCSI_API_URL", "http://localhost:8000")
     try:
-        resp = requests.get("http://localhost:8000/health", timeout=1)
-        if resp.status_code == 200:
-            print("       Info: FastAPI backend is running and reachable on http://localhost:8000")
+        resp = requests.get(f"{api_url}/health", timeout=1)
+        if resp.status_code != 200:
+            print(f"       Info: {api_url} returned HTTP {resp.status_code} (server may be starting).")
         else:
-            print("       Info: FastAPI backend returned non-200 status (Server may be starting).")
+            payload = resp.json()
+            # A 200 proves something is listening, not that it is DeepCSI. Any
+            # other service on the port answers too, and then every /predict
+            # fails during the demo -- so check for a field only this API returns.
+            if "available_models" in payload:
+                print(f"       Info: DeepCSI backend reachable on {api_url} "
+                      f"(models: {payload['available_models']})")
+            else:
+                print(f"       WARNING: {api_url} is serving a DIFFERENT application, not DeepCSI.")
+                print(f"                Response: {str(payload)[:120]}")
+                print( "                Start DeepCSI on a free port and point the dashboard at it:")
+                print( "                  python -m uvicorn backend.app:app --port 8001")
+                print( "                  set DEEPCSI_API_URL=http://localhost:8001")
     except Exception:
-        print("       Info: FastAPI backend not running locally (Will be started for demo).")
+        print(f"       Info: no backend responding at {api_url} (will be started for the demo).")
 
     print("\n===========================================================")
     print("               DEEPCSI PREFLIGHT: PASS                     ")

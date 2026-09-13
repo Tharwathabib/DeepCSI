@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import sys
 import time
@@ -15,12 +16,84 @@ root_dir = Path(__file__).resolve().parent.parent
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
-from utils.metrics import nmse_db, beamforming_gain_torch, beamforming_loss_db
-from models.csi_autoencoder import CSIAutoencoder
+from utils.metrics import (
+    nmse_db_aggregate,
+    nmse_per_sample_db,
+    nmse_distribution,
+    beamforming_gain_torch,
+    beamforming_loss_db,
+    spectral_efficiency,
+)
+
+from models.csi_autoencoder import CSIAutoencoder, build_from_checkpoint
 from models.dct_baseline import evaluate_dct_baseline
+from models.pca_baseline import evaluate_pca_baseline
+
+# SNR at which spectral efficiency is reported. Stated explicitly because the
+# figure is meaningless without it.
+SNR_DB = 10.0
+
+# Published CsiNet/CRNet reference values used to sit here and were appended to
+# the results table. They are measured on a different indoor benchmark that is
+# out of scope for this project, so the columns could never be a like-for-like
+# comparison against DeepMIMO O1 outdoor. Printing them beside our own would
+# invite exactly the comparison the README says cannot be made, so they are
+# gone rather than dormant.
 
 
-def evaluate_deepcsi_model(model, test_tensor, device):
+def measure_latency(model, test_tensor, device, n_runs: int = 100):
+    """
+    Measure encoder and decoder latency separately, at batch size 1.
+
+    The two halves run on different hardware in a real deployment -- the encoder
+    on the UE, the decoder at the gNodeB -- so a combined figure hides the only
+    number that decides feasibility. Batch size 1 is what a UE actually does; the
+    full-batch figure is throughput, not latency, and is reported separately
+    under its own name rather than being called latency.
+
+    Reports the median over n_runs, which is robust to scheduler jitter in a way
+    the mean is not.
+    """
+    single = test_tensor[:1]
+    enc, dec = [], []
+
+    with torch.no_grad():
+        for _ in range(10):                      # warmup
+            model.decoder(model.encoder(single))
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+
+        for _ in range(n_runs):
+            t0 = time.perf_counter()
+            latent = model.encoder(single)
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            t1 = time.perf_counter()
+            model.decoder(latent)
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            t2 = time.perf_counter()
+            enc.append((t1 - t0) * 1000.0)
+            dec.append((t2 - t1) * 1000.0)
+
+        # Amortised full-batch cost: throughput, for comparison with the above.
+        t0 = time.perf_counter()
+        model(test_tensor)
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        batch_ms = (time.perf_counter() - t0) * 1000.0
+
+    return {
+        "encoder_ms_ue": float(np.median(enc)),
+        "decoder_ms_gnb": float(np.median(dec)),
+        # Amortised full-batch cost. Kept under the name inference_ms because
+        # the dashboard reads that column, but it is throughput, not latency:
+        # a UE encodes one channel at a time and pays encoder_ms_ue.
+        "inference_ms": float(batch_ms / len(test_tensor)),
+    }
+
+
+def evaluate_deepcsi_model(model, test_tensor, device, norm_params=None):
     """
     Evaluate trained DeepCSI autoencoder model on test dataset.
     Measures NMSE, beamforming gain, and inference latency.
@@ -35,26 +108,31 @@ def evaluate_deepcsi_model(model, test_tensor, device):
         if device.type == "cuda":
             torch.cuda.synchronize()
 
-    # Latency timing
-    start_time = time.time()
+    timing = measure_latency(model, test_tensor, device)
+
     with torch.no_grad():
         reconstructions, latents = model(test_tensor)
-        if device.type == "cuda":
-            torch.cuda.synchronize()
-    elapsed_ms = ((time.time() - start_time) / num_samples) * 1000.0
 
     # Compute per-sample NMSE and beamforming gain
-    nmse_per_sample = []
     with torch.no_grad():
-        for i in range(num_samples):
-            pred = reconstructions[i:i+1]
-            true = test_tensor[i:i+1]
-            val = nmse_db(pred, true).item()
-            nmse_per_sample.append(val)
+        # Per-sample NMSE on the de-offset channel, vectorised. Measuring this on
+        # the raw [0,1] tensor divides by DC-dominated power and reports ~35 dB
+        # better than reality.
+        nmse_per_sample = nmse_per_sample_db(
+            reconstructions.cpu().numpy(), test_tensor.cpu().numpy(), norm_params
+        )
 
-        # Batch beamforming gain computation
-        gains_tensor = beamforming_gain_torch(reconstructions, test_tensor, return_per_sample=True)
-        gains_list = gains_tensor.cpu().numpy().tolist()
+        # Dataset-level NMSE in the CsiNet/CRNet convention, 10*log10(mean(ratio)).
+        # This is the figure that is comparable to published results.
+        aggregate_nmse = float(nmse_db_aggregate(reconstructions, test_tensor, norm_params).item())
+
+        # Batch beamforming gain computation. norm_params removes the DC offset
+        # baked into [0,1]-normalised data; without it rho saturates near 1.0 for
+        # every model and the metric carries no information.
+        gains_tensor = beamforming_gain_torch(
+            reconstructions, test_tensor, return_per_sample=True, norm_params=norm_params
+        )
+        gains_list = gains_tensor.cpu().numpy()
 
     mean_nmse = float(np.mean(nmse_per_sample))
     std_nmse = float(np.std(nmse_per_sample))
@@ -62,7 +140,24 @@ def evaluate_deepcsi_model(model, test_tensor, device):
     std_gain = float(np.std(gains_list))
     loss_db = float(beamforming_loss_db(mean_gain))
 
-    return mean_nmse, std_nmse, mean_gain, std_gain, loss_db, elapsed_ms, reconstructions.cpu().numpy(), latents.cpu().numpy()
+    stats = {
+        "nmse_db_mean": mean_nmse,
+        "nmse_db_std": std_nmse,
+        "nmse_db_aggregate": aggregate_nmse,
+        # rho itself, not just rho^2 -- CsiNet and CRNet report rho, so without
+        # this column the results cannot be placed beside published tables.
+        "cosine_similarity_rho": float(np.mean(np.sqrt(gains_list))),
+        "beamforming_gain_mean": mean_gain,
+        "beamforming_gain_std": std_gain,
+        "beamforming_loss_db": loss_db,
+        "spectral_efficiency_bps_hz": float(np.mean(spectral_efficiency(gains_list, SNR_DB))),
+        **nmse_distribution(nmse_per_sample),
+        **timing,
+        "encoder_params": sum(p.numel() for p in model.encoder.parameters()),
+        "decoder_params": sum(p.numel() for p in model.decoder.parameters()),
+    }
+
+    return stats, reconstructions.cpu().numpy(), latents.cpu().numpy()
 
 
 def generate_plots(df_combined, sample_orig, sample_recon_cr16, sample_dct_cr16, figures_dir):
@@ -73,8 +168,18 @@ def generate_plots(df_combined, sample_orig, sample_recon_cr16, sample_dct_cr16,
     df_deepcsi = df_combined[df_combined["method"] == "DeepCSI"]
     df_dct = df_combined[df_combined["method"] == "DCT Baseline"]
 
-    plt.plot(df_deepcsi["compression_ratio"], df_deepcsi["nmse_db_mean"], "o-", color="#1f77b4", linewidth=2.5, label="DeepCSI Autoencoder")
-    plt.plot(df_dct["compression_ratio"], df_dct["nmse_db_mean"], "s--", color="#ff7f0e", linewidth=2.5, label="2D DCT Baseline")
+    # Plot the same NMSE the results table and README quote -- the log-of-mean
+    # aggregate. Plotting nmse_db_mean here instead would put a different number
+    # on the figure than in the text, differing by more than a dB.
+    nmse_col = "nmse_db_aggregate" if "nmse_db_aggregate" in df_combined else "nmse_db_mean"
+
+    plt.plot(df_deepcsi["compression_ratio"], df_deepcsi[nmse_col], "o-", color="#1f77b4", linewidth=2.5, label="DeepCSI Autoencoder")
+    plt.plot(df_dct["compression_ratio"], df_dct[nmse_col], "s--", color="#ff7f0e", linewidth=2.5, label="2D DCT Baseline")
+
+    df_pca = df_combined[df_combined["method"] == "PCA Baseline"]
+    if not df_pca.empty:
+        plt.plot(df_pca["compression_ratio"], df_pca[nmse_col], "^-.", color="#9467bd",
+                 linewidth=2.5, label="PCA / KLT Baseline (optimal linear)")
 
     plt.axhline(-15, color="red", linestyle=":", label="Target Requirement (-15 dB)")
     plt.title("NMSE vs Compression Ratio (CR)", fontsize=14, fontweight="bold")
@@ -95,12 +200,24 @@ def generate_plots(df_combined, sample_orig, sample_recon_cr16, sample_dct_cr16,
     plt.plot(df_deepcsi["compression_ratio"], deepcsi_gain_pct, "o-", color="#2ca02c", linewidth=2.5, label="DeepCSI MRT Gain")
     plt.plot(df_dct["compression_ratio"], dct_gain_pct, "s--", color="#d62728", linewidth=2.5, label="2D DCT MRT Gain")
 
+    df_pca_g = df_combined[df_combined["method"] == "PCA Baseline"]
+    if not df_pca_g.empty:
+        plt.plot(df_pca_g["compression_ratio"], df_pca_g["beamforming_gain_mean"] * 100.0,
+                 "^-.", color="#9467bd", linewidth=2.5, label="PCA / KLT MRT Gain")
+
     plt.axhline(90.0, color="#7f7f7f", linestyle=":", label="90% Power Retention Target")
     plt.title("Downstream MRT Beamforming Gain vs Compression Ratio", fontsize=14, fontweight="bold")
     plt.xlabel("Compression Ratio (CR)", fontsize=12)
     plt.ylabel("Normalized Beamforming Power Gain (%)", fontsize=12)
     plt.xticks([4, 16, 32], ["CR=4", "CR=16", "CR=32"])
-    plt.ylim(50, 102)
+    # Fit the axis to the data instead of the hardcoded (50, 102), which was set
+    # when every gain read ~99.98% because of the offset bug. Real baselines now
+    # reach far lower -- DeepMIMO DCT hits 22.0% at CR=32 -- and a fixed floor of
+    # 50 silently pushes those bars off the figure, which is the same class of
+    # defect as a chart that lies by axis choice.
+    all_gains = pd.concat([deepcsi_gain_pct, dct_gain_pct] +
+                          ([df_pca_g["beamforming_gain_mean"] * 100.0] if not df_pca_g.empty else []))
+    plt.ylim(max(0.0, float(all_gains.min()) - 8.0), 102)
     plt.grid(True, linestyle="--", alpha=0.6)
     plt.legend(fontsize=11)
     plt.tight_layout()
@@ -153,7 +270,27 @@ def main():
 
     test_path = Path(args.data_dir) / "test.npy"
     if not test_path.exists():
-        raise FileNotFoundError(f"Test data not found at {test_path}. Run data/generate_data.py first.")
+        raise FileNotFoundError(
+            f"Test data not found at {test_path}.\n"
+            "Run one of:\n"
+            "  python data/generate_data.py --samples 50000  (synthetic, default track)\n"
+            "  python data/prepare_deepmimo.py               (real ray-traced)"
+        )
+
+    # The normalisation metadata drives the de-offset used by rho and by the
+    # aggregate NMSE. Evaluating without it silently reproduces the saturated
+    # beamforming numbers this pipeline used to report.
+    norm_params = None
+    norm_path = Path(args.data_dir) / "norm_params.json"
+    if norm_path.exists():
+        with open(norm_path) as f:
+            norm_params = json.load(f)
+        print(f"Dataset source: {norm_params.get('source', 'unknown')} "
+              f"(scheme={norm_params.get('scheme', 'minmax')})")
+    else:
+        print(f"WARNING: no norm_params.json in {args.data_dir}; "
+              "rho will be measured without removing the DC offset and will be "
+              "saturated near 1.0.")
 
     test_data_np = np.load(test_path)
     test_tensor = torch.from_numpy(test_data_np)
@@ -169,54 +306,94 @@ def main():
             print(f"Warning: Weights for CR={cr} not found at '{weight_path}'. Run training first.")
             continue
 
-        checkpoint = torch.load(weight_path, map_location=device)
-        model = CSIAutoencoder(compression_ratio=cr).to(device)
-        model.load_state_dict(checkpoint["model_state_dict"])
+        checkpoint = torch.load(weight_path, map_location=device, weights_only=False)
 
-        mean_nmse, std_nmse, mean_gain, std_gain, loss_db, latency, recons, latents = evaluate_deepcsi_model(model, test_tensor, device)
+        # Rebuild through the shared helper: both refine_widths and arch have to
+        # come from the checkpoint, or a crnet model cannot be evaluated at all.
+        model = build_from_checkpoint(checkpoint, cr, device)
+
+        # Warn loudly if the weights were trained on a different dataset than the
+        # test set currently loaded -- silently mixing them produces nonsense.
+        ckpt_source = checkpoint.get("data_source", "unknown")
+        current_source = (norm_params or {}).get("source", "unknown")
+        if ckpt_source != "unknown" and current_source != "unknown" and ckpt_source != current_source:
+            print(f"  WARNING: CR={cr} weights were trained on '{ckpt_source}' "
+                  f"but the test set is '{current_source}'.")
+
+        stats, recons, latents = evaluate_deepcsi_model(
+            model, test_tensor, device, norm_params=norm_params
+        )
         reconstructions_dict[cr] = recons
 
         latent_dim = total_scalars // cr
         scalar_reduction = (1.0 - (latent_dim / total_scalars)) * 100.0
 
-        print(f"DeepCSI CR={cr:2d} | Latent: {latent_dim:4d} | NMSE: {mean_nmse:6.2f} +/- {std_nmse:4.2f} dB | BF Gain: {mean_gain*100:5.2f}% ({loss_db:5.2f} dB) | Latency: {latency:.3f} ms/sample")
+        print(f"DeepCSI CR={cr:2d} | Latent: {latent_dim:4d} | "
+              f"NMSE {stats['nmse_db_aggregate']:6.2f} dB "
+              f"(p50 {stats['nmse_db_median']:6.2f}, p95 {stats['nmse_db_p95']:6.2f}) | "
+              f"rho {stats['cosine_similarity_rho']:.4f} | "
+              f"G {stats['beamforming_gain_mean']*100:5.2f}% | "
+              f"enc {stats['encoder_ms_ue']:.3f} ms / dec {stats['decoder_ms_gnb']:.3f} ms")
 
         deepcsi_results.append({
             "method": "DeepCSI",
             "compression_ratio": cr,
             "latent_dim": latent_dim,
-            "nmse_db_mean": round(mean_nmse, 2),
-            "nmse_db_std": round(std_nmse, 2),
-            "beamforming_gain_mean": round(mean_gain, 4),
-            "beamforming_gain_std": round(std_gain, 4),
-            "beamforming_loss_db": round(loss_db, 2),
-            "inference_ms": round(latency, 3),
-            "scalar_reduction_percent": round(scalar_reduction, 2)
+            "scalar_reduction_percent": round(scalar_reduction, 2),
+            **{k: (round(v, 4) if isinstance(v, float) else v) for k, v in stats.items()},
         })
 
     df_deepcsi = pd.DataFrame(deepcsi_results)
-    
-    # Run DCT Baseline evaluation
-    df_dct = evaluate_dct_baseline(test_data_np)
+
+    # Run DCT Baseline evaluation on the same test samples, same scalar budget
+    # and the same normalisation metadata, so the comparison is like-for-like.
+    df_dct = evaluate_dct_baseline(test_data_np, norm_params=norm_params, snr_db=SNR_DB)
+
+    # PCA is the stronger baseline: a linear autoencoder with k components is the
+    # optimal linear compressor, so it is the bar the learned model has to clear.
+    # Its basis is fit on TRAIN, never on the test samples scored here.
+    train_path = Path(args.data_dir) / "train.npy"
+    if train_path.exists():
+        pca_train = np.load(train_path)
+        if len(pca_train) > 20000:
+            sel = np.random.default_rng(0).choice(len(pca_train), 20000, replace=False)
+            pca_train = pca_train[sel]
+        df_pca = evaluate_pca_baseline(pca_train, test_data_np,
+                                       norm_params=norm_params, snr_db=SNR_DB)
+    else:
+        print(f"WARNING: {train_path} not found; skipping the PCA baseline.")
+        df_pca = pd.DataFrame()
 
     # Combine results
-    df_combined = pd.concat([df_deepcsi, df_dct], ignore_index=True)
+    df_combined = pd.concat([df_deepcsi, df_dct, df_pca], ignore_index=True)
+
+    # Stamp provenance onto every row. These CSVs are tracked in git as the
+    # evidence behind the README, and several tracks (7k synthetic, 35k
+    # synthetic, pooled DeepMIMO) write the same filename into different
+    # directories. Without this a reader comparing a CSV to the README finds a
+    # ~6 dB disagreement and no way to tell which run they are holding.
+    df_combined.insert(0, "dataset_source", (norm_params or {}).get("source", "unknown"))
+    df_combined.insert(1, "data_dir", str(args.data_dir))
+    df_combined.insert(2, "n_test", len(test_data_np))
 
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
 
     df_combined.to_csv(results_dir / "metrics.csv", index=False)
-    
-    # Pivot tables for direct comparison
-    pivot_nmse = df_combined.pivot(index="compression_ratio", columns="method", values="nmse_db_mean")
+
+    # Pivot tables for direct comparison. Use the aggregate NMSE -- the
+    # log-of-mean convention -- since that is what published results use.
+    nmse_col = "nmse_db_aggregate" if "nmse_db_aggregate" in df_combined else "nmse_db_mean"
+    pivot_nmse = df_combined.pivot(index="compression_ratio", columns="method", values=nmse_col)
+
     pivot_nmse.to_csv(results_dir / "nmse_comparison.csv")
 
     pivot_gain = df_combined.pivot(index="compression_ratio", columns="method", values="beamforming_gain_mean")
     pivot_gain.to_csv(results_dir / "beamforming_comparison.csv")
 
     print(f"\nSaved combined metrics to '{results_dir / 'metrics.csv'}'")
-    print("\n=== NMSE Comparison Table (dB) ===")
-    print(pivot_nmse.to_string())
+    print("\n=== NMSE Comparison Table (dB, log-of-mean convention) ===")
+    print(pivot_nmse.round(2).to_string())
     print("\n=== Downstream Beamforming Power Gain Comparison (G = rho^2) ===")
     print((pivot_gain * 100.0).round(2).to_string() + " %")
 
@@ -253,10 +430,6 @@ def main():
         df_comparison.to_csv(results_dir / "split_comparison.csv", index=False)
         print("\n=== Dataset Split Accuracy Comparison: 80/10/10 vs 70/10/20 ===")
         print(df_comparison.to_string(index=False))
-
-    print(f"\nSaved combined metrics to '{results_dir / 'metrics.csv'}'")
-    print("\n=== NMSE Comparison Table (dB) ===")
-    print(pivot_nmse.to_string())
 
     # Generate visual figures if CR=16 model was evaluated
     if 16 in reconstructions_dict:

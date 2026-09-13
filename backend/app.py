@@ -18,8 +18,8 @@ root_dir = Path(__file__).resolve().parent.parent
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
-from models.csi_autoencoder import CSIAutoencoder
-from utils.metrics import beamforming_gain_numpy, beamforming_loss_db, nmse_db
+from models.csi_autoencoder import CSIAutoencoder, build_from_checkpoint
+from utils.metrics import beamforming_gain_numpy, beamforming_loss_db, nmse_db_aggregate
 
 # Global in-memory storage for test dataset, normalization metadata, and loaded models
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -56,12 +56,16 @@ def load_resources():
         weight_path = weights_dir / f"deepcsi_cr{cr}.pt"
         if weight_path.exists():
             try:
-                model = CSIAutoencoder(compression_ratio=cr).to(DEVICE)
-                checkpoint = torch.load(weight_path, map_location=DEVICE)
-                model.load_state_dict(checkpoint["model_state_dict"])
-                model.eval()
+                checkpoint = torch.load(weight_path, map_location=DEVICE, weights_only=False)
+                # Rebuild through the shared helper so both refine_widths AND
+                # arch come from the checkpoint. Reading only the first, as this
+                # did, makes any crnet checkpoint fail load_state_dict -- and the
+                # except below turns that into a log line rather than a failure.
+                model = build_from_checkpoint(checkpoint, cr, DEVICE)
                 LOADED_MODELS[cr] = model
-                print(f"[Backend Startup] Loaded model weight for CR={cr} on {DEVICE}")
+                source = checkpoint.get("data_source", "unknown")
+                print(f"[Backend Startup] Loaded model weight for CR={cr} on {DEVICE} "
+                      f"(trained on: {source})")
             except Exception as e:
                 print(f"[Backend Startup Error] Failed loading CR={cr} model: {e}")
 
@@ -139,6 +143,35 @@ class PredictResponse(BaseModel):
     reconstructed_matrix_imag: List[List[float]]
 
 
+def normalize_external(raw: np.ndarray, norm_params: Dict):
+    """
+    Map a raw (2, 32, 32) matrix into the normalised domain the models expect.
+
+    Honours how the dataset was actually built. The synthetic set uses one global
+    scale, recorded as min/max. DeepMIMO is normalised PER SAMPLE by its own
+    peak, and its min/max of -0.5/+0.5 encode only the offset convention -- there
+    is no global scale to apply. Scaling a raw DeepMIMO matrix by that 1.0 span
+    maps every element to within a whisker of 0.5, i.e. a constant, and the
+    decoder output then gets denormalised by the wrong factor.
+
+    Returns (normalised, denorm_fn) so the caller can invert exactly what was done.
+    """
+    if norm_params.get("normalisation") == "per_sample_peak":
+        peak = float(max(np.abs(raw[0]).max(), np.abs(raw[1]).max()))
+        if peak <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Matrix is all zeros; it carries no channel to compress.",
+            )
+        scaled = np.clip(raw / (2.0 * peak) + 0.5, 0.0, 1.0).astype(np.float32)
+        return scaled, (lambda x, p=peak: (x - 0.5) * 2.0 * p)
+
+    lo = float(norm_params["min"])
+    hi = float(norm_params["max"])
+    scaled = np.clip((raw - lo) / (hi - lo + 1e-10), 0.0, 1.0).astype(np.float32)
+    return scaled, (lambda x, a=lo, b=hi: x * (b - a) + a)
+
+
 def run_model_inference(sample_np: np.ndarray, compression_ratio: int):
     """
     Execute autoencoder forward pass on a normalized (2, 32, 32) float32 tensor.
@@ -158,6 +191,20 @@ def run_model_inference(sample_np: np.ndarray, compression_ratio: int):
                    f"Expected file '{weights_file}'."
         )
 
+    # Refuse rather than report. Every metric below is measured on the de-offset
+    # channel, and without NORM_PARAMS the offset is taken as 0: NMSE comes out
+    # ~35 dB too optimistic and the beamforming gain saturates near 100% for any
+    # output at all. Startup only logged a warning and then served those numbers
+    # to the dashboard, which is the failure mode this whole branch exists to
+    # stamp out -- a wrong answer is worse than no answer.
+    if NORM_PARAMS is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Normalisation metadata not loaded, so NMSE and beamforming "
+                   "gain cannot be computed correctly. Set DATA_DIR to a folder "
+                   "containing norm_params.json and restart the API.",
+        )
+
     model = LOADED_MODELS[compression_ratio]
     sample_tensor = torch.from_numpy(sample_np).unsqueeze(0).to(DEVICE)
 
@@ -172,10 +219,13 @@ def run_model_inference(sample_np: np.ndarray, compression_ratio: int):
         torch.cuda.synchronize()
     inference_ms = (time.time() - start_time) * 1000.0
 
-    nmse_val = float(nmse_db(recon_tensor, sample_tensor).item())
+    # Both metrics are measured on the de-offset complex channel. Without
+    # NORM_PARAMS the DC component of [0,1]-normalised data dominates the signal
+    # power, inflating NMSE by ~35 dB and pinning the beamforming gain near 100%.
+    nmse_val = float(nmse_db_aggregate(recon_tensor, sample_tensor, NORM_PARAMS).item())
     recon_np = recon_tensor.squeeze(0).cpu().numpy()
 
-    bf_gain_val = float(beamforming_gain_numpy(recon_np, sample_np))
+    bf_gain_val = float(beamforming_gain_numpy(recon_np, sample_np, norm_params=NORM_PARAMS))
     bf_loss_val = float(beamforming_loss_db(bf_gain_val))
 
     return recon_np, inference_ms, nmse_val, bf_gain_val, bf_loss_val, model.latent_dim
@@ -255,6 +305,7 @@ def predict(req: PredictRequest):
         sample_np = TEST_DATA[req.sample_index].astype(np.float32)
         raw_sample = sample_np
         input_source = "benchmark"
+        denorm_fn = None
     else:
         raw_sample = np.stack([
             np.array(req.matrix_real, dtype=np.float32),
@@ -262,22 +313,39 @@ def predict(req: PredictRequest):
         ], axis=0)
         input_source = "custom_json"
 
+        denorm_fn = None
         if req.auto_normalize and NORM_PARAMS is not None:
-            norm_min = float(NORM_PARAMS["min"])
-            norm_max = float(NORM_PARAMS["max"])
-            sample_np = (raw_sample - norm_min) / (norm_max - norm_min + 1e-10)
-            sample_np = np.clip(sample_np, 0.0, 1.0).astype(np.float32)
+            sample_np, denorm_fn = normalize_external(raw_sample, NORM_PARAMS)
         else:
+            # auto_normalize=false means the caller asserts their matrix is
+            # ALREADY in the normalised [0,1] domain, because that is the only
+            # thing the model and the metrics can interpret. Reject anything
+            # else rather than measuring it: the metrics subtract the 0.5 offset
+            # unconditionally, so a zero-centred matrix would have an offset
+            # removed that was never applied, injecting a DC term into the NMSE
+            # denominator. That is the same defect as the -38 dB bug, pointing
+            # the other way, and it would report a too-optimistic number instead
+            # of failing.
+            lo, hi = float(raw_sample.min()), float(raw_sample.max())
+            if lo < -1e-6 or hi > 1.0 + 1e-6:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"auto_normalize=false requires a matrix already in [0,1] with "
+                        f"0.5 as complex zero; got range [{lo:.4f}, {hi:.4f}]. Send "
+                        "auto_normalize=true to have the server scale it, or normalise "
+                        "it yourself before sending."
+                    ),
+                )
             sample_np = raw_sample
 
     recon_np, inference_ms, nmse_val, bf_gain_val, bf_loss_val, latent_dim = run_model_inference(
         sample_np, req.compression_ratio
     )
 
-    if req.sample_index is None and req.auto_normalize and NORM_PARAMS is not None:
-        norm_min = float(NORM_PARAMS["min"])
-        norm_max = float(NORM_PARAMS["max"])
-        denorm_recon = recon_np * (norm_max - norm_min) + norm_min
+    if req.sample_index is None and denorm_fn is not None:
+        # Invert exactly the mapping that was applied, per-sample peak included.
+        denorm_recon = denorm_fn(recon_np)
         orig_out_real = raw_sample[0].tolist()
         orig_out_imag = raw_sample[1].tolist()
         recon_out_real = denorm_recon[0].tolist()
@@ -342,13 +410,27 @@ async def predict_upload(
     # Auto-detect if array is already in [0, 1] range vs raw physical scale
     is_already_normalized = bool(raw_sample.min() >= 0.0 and raw_sample.max() <= 1.0)
 
+    upload_denorm_fn = None
     if auto_normalize and NORM_PARAMS is not None and not is_already_normalized:
-        norm_min = float(NORM_PARAMS["min"])
-        norm_max = float(NORM_PARAMS["max"])
-        sample_np = (raw_sample - norm_min) / (norm_max - norm_min + 1e-10)
-        sample_np = np.clip(sample_np, 0.0, 1.0).astype(np.float32)
+        sample_np, upload_denorm_fn = normalize_external(raw_sample, NORM_PARAMS)
         should_denorm = True
     else:
+        # Same guard as /predict. Reaching here means either the caller disabled
+        # auto-normalisation or the array already looked normalised; in both
+        # cases it is about to be measured with the 0.5 offset removed, so it
+        # must actually be in that domain. Anything else has an offset subtracted
+        # that was never applied, which injects a DC term into the NMSE
+        # denominator and reports a too-optimistic number rather than failing.
+        lo, hi = float(raw_sample.min()), float(raw_sample.max())
+        if lo < -1e-6 or hi > 1.0 + 1e-6:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Uploaded array must be in [0,1] with 0.5 as complex zero when "
+                    f"auto_normalize is off; got range [{lo:.4f}, {hi:.4f}]. Enable "
+                    "auto_normalize, or normalise before upload."
+                ),
+            )
         sample_np = raw_sample
         should_denorm = False
 
@@ -356,10 +438,8 @@ async def predict_upload(
         sample_np, compression_ratio
     )
 
-    if should_denorm and NORM_PARAMS is not None:
-        norm_min = float(NORM_PARAMS["min"])
-        norm_max = float(NORM_PARAMS["max"])
-        denorm_recon = recon_np * (norm_max - norm_min) + norm_min
+    if should_denorm and upload_denorm_fn is not None:
+        denorm_recon = upload_denorm_fn(recon_np)
         orig_out_real = raw_sample[0].tolist()
         orig_out_imag = raw_sample[1].tolist()
         recon_out_real = denorm_recon[0].tolist()

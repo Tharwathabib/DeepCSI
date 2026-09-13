@@ -1,4 +1,5 @@
 import io
+import os
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -376,6 +377,11 @@ st.html("""
         font-weight: 600;
     }
 
+    .status-fail {
+        color: #F87171;
+        font-weight: 600;
+    }
+
     /* Sidebar Clean styling */
     .sidebar-section {
         margin-bottom: 1.5rem;
@@ -407,18 +413,35 @@ st.html("""
 
 # Sidebar Controls
 st.sidebar.markdown("<div class='sidebar-title'>Connection & Parameters</div>", unsafe_allow_html=True)
-backend_url = st.sidebar.text_input("API Endpoint", value="http://localhost:8000", label_visibility="collapsed")
+DEFAULT_API_URL = os.getenv("DEEPCSI_API_URL", "http://localhost:8000")
+backend_url = st.sidebar.text_input("API Endpoint", value=DEFAULT_API_URL, label_visibility="collapsed")
 
 # Backend Health Verification
 health_data = None
 backend_online = False
+wrong_service = False
 try:
     resp = requests.get(f"{backend_url}/health", timeout=1.2)
     if resp.status_code == 200:
-        health_data = resp.json()
-        backend_online = True
+        payload = resp.json()
+        # A bare 200 is not proof this is DeepCSI -- any other service on the
+        # port answers too, and then every /predict fails mid-demo. Require a
+        # field only this API returns.
+        if "available_models" in payload:
+            health_data = payload
+            backend_online = True
+        else:
+            wrong_service = True
 except Exception:
     backend_online = False
+
+if wrong_service:
+    st.sidebar.error(
+        f"Something is answering at {backend_url}, but it is not the DeepCSI API. "
+        "Another service is using that port. Start DeepCSI on a free port:\n\n"
+        "`python -m uvicorn backend.app:app --port 8001`\n\n"
+        "then set the endpoint above to `http://localhost:8001`."
+    )
 
 if backend_online and health_data:
     st.sidebar.markdown(f"""
@@ -571,18 +594,63 @@ if pred_data:
     orig_scalars = pred_data["original_scalars"]
     compressed_dim = pred_data["compressed_dim"]
     latency_ms = pred_data["inference_ms"]
-    bf_gain_pct = pred_data.get("beamforming_gain_percent", 99.98)
-    bf_loss_db = pred_data.get("beamforming_loss_db", -0.0)
+    bf_gain_pct = pred_data.get("beamforming_gain_percent")
+    bf_loss_db = pred_data.get("beamforming_loss_db")
     source_badge = pred_data.get("input_source", input_mode).upper()
 else:
+    # No inference has run. Only the values that follow from the compression
+    # ratio alone are known; every measured quantity stays None and renders as
+    # a dash. Never substitute placeholder numbers here -- a dashboard showing
+    # plausible-looking NMSE with no model loaded is a live-demo hazard.
     overhead_red = (1.0 - (1.0 / cr_selected)) * 100.0
-    nmse_db_val = -38.3 if cr_selected == 16 else (-38.5 if cr_selected == 4 else -38.0)
+    nmse_db_val = None
     orig_scalars = 2048
     compressed_dim = 2048 // cr_selected
-    latency_ms = 0.11
-    bf_gain_pct = 99.98
-    bf_loss_db = -0.0
+    latency_ms = None
+    bf_gain_pct = None
+    bf_loss_db = None
     source_badge = input_mode.upper()
+
+
+def fmt_metric(value, spec: str, dash: str = "&mdash;") -> str:
+    """Format a measured value, or a dash when nothing has been measured yet."""
+    return dash if value is None else format(value, spec)
+
+
+def _gain_axis_floor(*series, pad: float = 8.0) -> float:
+    """
+    Lower bound for the beamforming-gain axis, fitted to whatever was measured.
+
+    Returns 0 when no series carries data, so a metrics.csv missing the
+    beamforming column renders a full-range empty chart instead of raising
+    ValueError out of min() and taking the whole panel down.
+    """
+    values = [float(v) for s in series for v in list(s) if pd.notna(v)]
+    if not values:
+        return 0.0
+    return max(0.0, min(values) - pad)
+
+
+nmse_str = fmt_metric(nmse_db_val, ".1f")
+bf_gain_str = fmt_metric(bf_gain_pct, ".2f")
+bf_loss_str = fmt_metric(bf_loss_db, ".2f")
+latency_str = fmt_metric(latency_ms, ".2f")
+
+# The pass/fail badge must reflect the measured gain rather than asserting PASS
+# unconditionally, which it did previously even with no model loaded.
+if bf_gain_pct is None:
+    bf_status_class, bf_status_text = "", "awaiting inference"
+elif bf_gain_pct >= 90.0:
+    bf_status_class, bf_status_text = "status-pass", "PASS &ge; 90%"
+else:
+    bf_status_class, bf_status_text = "status-fail", "below 90% target"
+
+if nmse_db_val is None:
+    nmse_status_class, nmse_status_text = "", "awaiting inference"
+elif nmse_db_val <= -15.0:
+    nmse_status_class, nmse_status_text = "status-pass", "PASS (target &le; -15.0 dB)"
+else:
+    nmse_status_class, nmse_status_text = "status-fail", "above -15.0 dB target"
 
 orig_kb = (orig_scalars * 4) / 1024
 comp_kb = (compressed_dim * 4) / 1024
@@ -627,7 +695,7 @@ arch_html = f"""
                 <div class='font-mono' style='font-size: 0.72rem; color: #94A3B8;'>{comp_kb:.2f} KB / channel sample</div>
             </div>
             <div style='display: flex; justify-content: space-between; font-size: 0.7rem; color: #64748B; font-family: monospace;'>
-                <span>Delay: {latency_ms:.2f} ms</span>
+                <span>Delay: {latency_str} ms</span>
                 <span>Subcarrier: 256</span>
             </div>
         </div>
@@ -642,8 +710,8 @@ arch_html = f"""
             <table class='spec-table'>
                 <tr><td>Decoder Arch</td><td class='val'>2× ResBlocks</td></tr>
                 <tr><td>Reconstructed Dim</td><td class='val'>32 × 32 complex</td></tr>
-                <tr><td>Verification NMSE</td><td class='val' style='color:#10B981;'>{nmse_db_val:.1f} dB</td></tr>
-                <tr><td>MRT Beamforming</td><td class='val' style='color:#38BDF8;'>{bf_gain_pct:.2f}% ({bf_loss_db:.2f} dB)</td></tr>
+                <tr><td>Verification NMSE</td><td class='val' style='color:#10B981;'>{nmse_str} dB</td></tr>
+                <tr><td>MRT Beamforming</td><td class='val' style='color:#38BDF8;'>{bf_gain_str}% ({bf_loss_str} dB)</td></tr>
             </table>
         </div>
     </div>
@@ -663,13 +731,13 @@ kpi_html = f"""
     </div>
     <div class='metric-panel'>
         <div class='metric-title'>Reconstruction NMSE</div>
-        <div class='metric-value' style='color:#10B981;'>{nmse_db_val:.1f} dB</div>
-        <div class='metric-footer status-pass'>PASS (Target &le; -15.0 dB)</div>
+        <div class='metric-value' style='color:#10B981;'>{nmse_str} dB</div>
+        <div class='metric-footer {nmse_status_class}'>{nmse_status_text}</div>
     </div>
     <div class='metric-panel'>
         <div class='metric-title'>Downstream MRT Gain</div>
-        <div class='metric-value' style='color:#38BDF8;'>{bf_gain_pct:.2f}%</div>
-        <div class='metric-footer status-pass'>{bf_loss_db:.2f} dB loss (PASS &ge; 90%)</div>
+        <div class='metric-value' style='color:#38BDF8;'>{bf_gain_str}%</div>
+        <div class='metric-footer {bf_status_class}'>{bf_loss_str} dB loss ({bf_status_text})</div>
     </div>
     <div class='metric-panel'>
         <div class='metric-title'>Payload Comparison</div>
@@ -678,7 +746,7 @@ kpi_html = f"""
     </div>
     <div class='metric-panel'>
         <div class='metric-title'>Inference Latency</div>
-        <div class='metric-value'>{latency_ms:.2f} <span style='font-size:0.85rem; color:#64748B;'>ms</span></div>
+        <div class='metric-value'>{latency_str} <span style='font-size:0.85rem; color:#64748B;'>ms</span></div>
         <div class='metric-footer'>Per-sample evaluation</div>
     </div>
 </div>
@@ -861,6 +929,13 @@ with tab_bench:
     if metrics_csv.exists():
         df_bench = pd.read_csv(metrics_csv)
 
+        # Quote the same NMSE the results table and README quote: the
+        # log-of-mean aggregate, which is the literature convention. Falling
+        # back to nmse_db_mean keeps older metrics.csv files readable, but when
+        # both exist they differ by more than a dB, and showing one on screen
+        # while the slides show the other is a live-demo hazard.
+        NMSE_COL = "nmse_db_aggregate" if "nmse_db_aggregate" in df_bench.columns else "nmse_db_mean"
+
         col_plot, col_table = st.columns([1.2, 1.0])
 
         with col_plot:
@@ -881,17 +956,17 @@ with tab_bench:
                 fig_bar.add_trace(go.Bar(
                     name="DeepCSI Autoencoder",
                     x=[f"CR={cr}" for cr in df_deep["compression_ratio"]],
-                    y=df_deep["nmse_db_mean"],
+                    y=df_deep[NMSE_COL],
                     marker_color="#2563EB",
-                    text=[f"{v:.1f} dB" for v in df_deep["nmse_db_mean"]],
+                    text=[f"{v:.1f} dB" for v in df_deep[NMSE_COL]],
                     textposition="auto"
                 ))
                 fig_bar.add_trace(go.Bar(
                     name="2D DCT Baseline",
                     x=[f"CR={cr}" for cr in df_dct["compression_ratio"]],
-                    y=df_dct["nmse_db_mean"],
+                    y=df_dct[NMSE_COL],
                     marker_color="#475569",
-                    text=[f"{v:.1f} dB" for v in df_dct["nmse_db_mean"]],
+                    text=[f"{v:.1f} dB" for v in df_dct[NMSE_COL]],
                     textposition="auto"
                 ))
                 fig_bar.add_hline(
@@ -913,8 +988,10 @@ with tab_bench:
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                 )
             else:
-                deep_gains = (df_deep["beamforming_gain_mean"] * 100.0) if "beamforming_gain_mean" in df_deep else [99.98, 99.98, 99.98]
-                dct_gains = (df_dct["beamforming_gain_mean"] * 100.0) if "beamforming_gain_mean" in df_dct else [100.0, 99.99, 99.99]
+                # No placeholder gains: if the column is absent the metrics file
+                # predates the beamforming metric and there is nothing to plot.
+                deep_gains = (df_deep["beamforming_gain_mean"] * 100.0) if "beamforming_gain_mean" in df_deep else []
+                dct_gains = (df_dct["beamforming_gain_mean"] * 100.0) if "beamforming_gain_mean" in df_dct else []
 
                 fig_bar.add_trace(go.Bar(
                     name="DeepCSI MRT Power",
@@ -942,7 +1019,13 @@ with tab_bench:
                 fig_bar.update_layout(
                     title="Downstream MRT Beamforming Power Retention (%)",
                     yaxis_title="Power Gain (% of ideal)",
-                    yaxis_range=[85, 101],
+                    # Fit to the data. The old [85, 101] was set when every gain
+                    # read ~99.98% under the offset bug; with correct metrics the
+                    # DCT bars fall to 22-62% and were being clipped clean out of
+                    # the chart mid-demo. min() over an empty sequence raises, so
+                    # fall back to the full axis when the column is absent rather
+                    # than taking the chart down with a ValueError.
+                    yaxis_range=[_gain_axis_floor(deep_gains, dct_gains), 101],
                     barmode="group",
                     height=340,
                     template="plotly_dark",
@@ -964,9 +1047,15 @@ with tab_bench:
                 cr = int(row["compression_ratio"])
                 latent = int(row["latent_dim"])
                 overhead = float(row["scalar_reduction_percent"])
-                nmse = float(row["nmse_db_mean"])
+                nmse = float(row[NMSE_COL])
                 lat = float(row["inference_ms"])
-                bf_gain = float(row.get("beamforming_gain_mean", 0.9998)) * 100.0
+                # No 0.9998 default. That figure came from measuring rho without
+                # removing the 0.5 offset, where a constant-output model also
+                # scores 99.94% -- it is the number this branch exists to delete,
+                # and a fallback is a live path back to it. NaN renders as a dash.
+                bf_gain = float(row["beamforming_gain_mean"]) * 100.0 \
+                    if "beamforming_gain_mean" in row and pd.notna(row["beamforming_gain_mean"]) \
+                    else float("nan")
 
                 # NMSE color coding
                 if nmse > -15.0:
@@ -986,7 +1075,8 @@ with tab_bench:
                 else:
                     overhead_badge = f"<span style='background:rgba(59,130,246,0.15); color:#3B82F6; padding:2px 6px; border-radius:4px; font-weight:600; font-family:monospace;'>{overhead:.1f}%</span>"
 
-                bf_badge = f"<span style='background:rgba(56,189,248,0.15); color:#38BDF8; border:1px solid rgba(56,189,248,0.3); padding:2px 6px; border-radius:4px; font-weight:600; font-family:monospace;'>{bf_gain:.2f}%</span>"
+                bf_text = "&mdash;" if pd.isna(bf_gain) else f"{bf_gain:.2f}%"
+                bf_badge = f"<span style='background:rgba(56,189,248,0.15); color:#38BDF8; border:1px solid rgba(56,189,248,0.3); padding:2px 6px; border-radius:4px; font-weight:600; font-family:monospace;'>{bf_text}</span>"
                 lat_text = f"<span style='font-family:monospace; color:{'#10B981' if lat < 0.15 else '#94A3B8'}; font-weight:500;'>{lat:.3f} ms</span>"
                 method_label = f"<span style='font-weight:600; color:{'#38BDF8' if method == 'DeepCSI' else '#CBD5E1'};'>{method}</span>"
 

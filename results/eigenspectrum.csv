@@ -1,0 +1,4 @@
+dataset_source,split,n_samples_used,rank_90pct_variance,rank_99pct_variance,latent_dim,compression_ratio,variance_retained_percent,residual_variance,linear_nmse_floor_db
+synthetic_3gpp_inspired_robust,test,10000,266,628,64,32,54.7582,0.45241813486131666,-3.4446
+synthetic_3gpp_inspired_robust,test,10000,266,628,128,16,73.9496,0.26050362685276474,-5.8419
+synthetic_3gpp_inspired_robust,test,10000,266,628,512,4,97.8183,0.021817127690033966,-16.612

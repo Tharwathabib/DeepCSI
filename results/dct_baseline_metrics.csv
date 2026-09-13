@@ -1,0 +1,4 @@
+method,compression_ratio,latent_dim,scalar_reduction_percent,nmse_db_mean,nmse_db_std,nmse_db_aggregate,cosine_similarity_rho,beamforming_gain_mean,beamforming_gain_std,beamforming_loss_db,spectral_efficiency_bps_hz,nmse_db_p5,nmse_db_median,nmse_db_p95,nmse_db_worst,inference_ms,index_overhead_bits,feedback_bits_at_6bit
+DCT Baseline,4,512,75.0,-11.12,1.41,-10.92,0.9589,0.9197,0.0223,-0.36,3.3497,-13.8331,-10.8159,-9.5506,-7.667,0.247,1656.0,4728.0
+DCT Baseline,16,128,93.75,-4.12,0.75,-4.06,0.783,0.6148,0.0651,-2.11,2.8318,-5.5077,-3.9426,-3.2627,-2.3076,0.229,686.0,1454.0
+DCT Baseline,32,64,96.88,-2.48,0.5,-2.46,0.6646,0.4441,0.0666,-3.52,2.4335,-3.3937,-2.3859,-1.8847,-1.2829,0.249,407.0,791.0

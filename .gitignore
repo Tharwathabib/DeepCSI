@@ -14,15 +14,53 @@ data/processed/*.json
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 
-# Models
+# Real-data track: DeepMIMO tensors are multi-hundred-MB, regenerate with
+# python data/prepare_deepmimo.py
+data/processed_deepmimo/
+
+# DeepMIMO scenario cache: 2.4 GB zip plus extracted ray-tracing data.
+# Re-fetch with deepmimo.download('o1_3p5').
+deepmimo_scenarios/
+
+# Models. Same policy as the results CSVs below, for the same reason: the three
+# production checkpoints per track ARE tracked. They are 11 MB per track, they
+# are the artifact every published number was measured from, and regenerating
+# them costs ~35 minutes of CPU per compression ratio -- so without them a
+# reader cannot check a single figure in the README without half a day of
+# training. Pairing them with the wrong dataset is caught, not silent:
+# preflight.py compares the checkpoint's data_source against norm_params.json.
+# Ablation sweep checkpoints stay out (results/* already covers them).
 models/weights/*.pt
+!models/weights/deepcsi_cr4.pt
+!models/weights/deepcsi_cr16.pt
+!models/weights/deepcsi_cr32.pt
 !models/weights/.gitkeep
 
-# Results
-results/*.csv
-results/figures/*.png
+# Results. Generated output is ignored, with one deliberate exception: the CSVs
+# ARE tracked. They are the evidence for every number in the README, they are a
+# few KB of text, and they diff. Without them a reader has to take the tables on
+# trust or spend an hour of CPU reproducing them -- and the whole point of this
+# branch is that the previously published numbers could not be checked.
+# Weights, .npy tensors and figures stay out; they are large and regenerable.
+results/*
 !results/.gitkeep
+!results/*.csv
+!results/figures/
+results/figures/*
 !results/figures/.gitkeep
+
+# Alternate dataset track, same policy.
+results_deepmimo/**
+!results_deepmimo/*.csv
+
+# Weights for the alternate dataset track. Note this ignores the directory's
+# CONTENTS rather than the directory itself -- a negation cannot re-include a
+# file underneath an excluded directory, so `models/weights_deepmimo/` would
+# make the three exceptions below dead letters.
+models/weights_deepmimo/*
+!models/weights_deepmimo/deepcsi_cr4.pt
+!models/weights_deepmimo/deepcsi_cr16.pt
+!models/weights_deepmimo/deepcsi_cr32.pt
 
 # IDE / OS
 .vscode/
