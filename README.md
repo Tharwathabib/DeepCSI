@@ -129,11 +129,28 @@ coefficients without paying the ~11 bits each to say *which* $K$ it kept.
 
 Against that stronger bar, DeepCSI wins by **7.9 dB at CR=16** and **7.5 dB at
 CR=32** — and **loses by 1.9 dB at CR=4**. The loss is structural rather than a
-tuning failure: this dataset's angular-delay tensor has an intrinsic rank of
-291 (90% of variance) out of 2048, so a latent of 512 is *not* a bottleneck and
-PCA is performing near-lossless linear reconstruction. Where the latent
-genuinely binds, the nonlinear model is far ahead. That crossover is the honest
-version of the "learned compression wins when the budget is tight" claim.
+tuning failure, and the eigenspectrum says exactly why. The variance a
+$k$-component linear basis must discard sets a floor that *no* linear
+compressor can beat, $10\log_{10}\left(\sum_{i>k}\lambda_i / \sum_i \lambda_i\right)$,
+measured on the test set's own covariance:
+
+| Latent | Variance in top $k$ | Linear floor | PCA measured | DeepCSI |
+| :--- | ---: | ---: | ---: | ---: |
+| 512 (CR=4) | 98.38% | **-17.90 dB** | -17.00 dB | -15.14 dB |
+| 128 (CR=16) | 64.09% | -4.45 dB | -4.43 dB | **-12.35 dB** |
+| 64 (CR=32) | 42.26% | -2.39 dB | -2.36 dB | **-9.87 dB** |
+
+At CR=4 a linear basis still has 98.38% of the energy to work with, so PCA is
+doing near-lossless reconstruction and there is almost nothing for a nonlinear
+model to add — it is *not a bottleneck*. At CR=16 and CR=32 the floor collapses
+to -4.45 and -2.39 dB, and PCA lands within **0.03 dB** of it — it is essentially
+optimal, exactly as the theory says. DeepCSI goes **7.9 dB and 7.5 dB below** a
+bound that binds every linear method, reconstructing detail no linear basis of
+that width can represent at all. That crossover is the honest version of the
+"learned compression wins when the budget is tight" claim.
+
+Reproduce: `python models/eigenspectrum.py --data-dir data/processed_deepmimo --results-dir results_deepmimo`
+(`results_deepmimo/eigenspectrum.csv`).
 
 > **Not comparable to published CsiNet/CRNet numbers.** Those are measured on a
 > different indoor benchmark; this is DeepMIMO O1 outdoor. The CR=16 and CR=32
@@ -141,6 +158,56 @@ version of the "learned compression wins when the budget is tight" claim.
 > easier benchmark at high compression — a different channel model, not a better
 > model. Running on the literature's own benchmark is out of scope, so this is a
 > limitation we accept and state, not outstanding work.
+
+### The two tracks side by side
+
+Both tracks run the **same architecture** (`csinet`, `refine_widths 8 16`,
+60 epochs) through the same evaluation code. They do *not* share a training
+recipe — synthetic uses `--weight-decay 2e-6` with the default MSE loss, DeepMIMO
+uses `--loss nmse --weight-decay 0` — so read the columns as *two measured
+configurations*, not as a controlled experiment isolating the data:
+
+| | | Synthetic (3GPP-inspired) | DeepMIMO O1 (ray-traced) | Δ |
+| :--- | :--- | ---: | ---: | ---: |
+| **NMSE** | CR=4 | **-17.11 dB** | -15.14 dB | +1.97 |
+| | CR=16 | -10.97 dB | **-12.35 dB** | -1.38 |
+| | CR=32 | -7.53 dB | **-9.87 dB** | -2.34 |
+| **MRT gain** | CR=4 | **98.27%** | 97.20% | |
+| | CR=16 | 92.69% | **94.48%** | |
+| | CR=32 | 83.71% | **90.25%** | |
+| **vs PCA** | CR=4 | **+3.08 dB** | -1.86 dB | |
+| | CR=16 | +6.60 dB | **+7.92 dB** | |
+| | CR=32 | +5.03 dB | **+7.51 dB** | |
+| **Spread** | CR=4 → CR=32 | 9.58 dB | **5.27 dB** | |
+| **Linear floor** | 512 (CR=4) | -16.61 dB | **-17.90 dB** | |
+| | 64 (CR=32) | **-3.44 dB** | -2.39 dB | |
+| **Intrinsic rank** | 90% of variance | 266 / 2048 | 298 / 2048 | |
+| **Test samples** | | 10,000 | 12,000 | |
+
+Three things worth saying out loud — each of which survives the recipe
+difference, because none of them turns on a sub-dB gap:
+
+1. **The real-data track is harder at CR=4 and easier at CR=32.** Synthetic wins
+   the headline number by 2 dB, but loses by 2.3 dB where compression actually
+   bites. Quoting only CR=4 would flatter the synthetic generator.
+2. **The real-data curve is flatter** — 5.27 dB across the CR range against
+   9.58 dB. On the configurations shipped here, the ray-traced channels degrade
+   more gracefully under aggressive compression than the synthetic generator
+   suggests: the more favourable result for the system claim, and the less
+   favourable one for the generator's realism.
+3. **DeepCSI's margin over PCA is *larger* on real data** where the latent
+   binds (+7.9 / +7.5 dB against +6.6 / +5.0 dB). The one place it loses is
+   CR=4 on DeepMIMO, for the eigenspectrum reason above. The synthetic
+   generator understates the case for learned compression at high CR.
+
+> **Quote the DeepMIMO numbers.** The synthetic track is a generator, not a
+> validated channel model; it exists to exercise the pipeline and to isolate
+> training effects (see the weight-decay study above). The real-data figures are
+> the ones that belong in a claim.
+
+`results/eigenspectrum.csv` and `results_deepmimo/eigenspectrum.csv` back the
+rank and floor rows; `results/metrics.csv` and `results_deepmimo/metrics.csv`
+back everything else.
 
 ### Quantized feedback — the actual bandwidth claim
 
@@ -208,12 +275,14 @@ deepcsi-core/
 │
 ├── data/
 │   ├── raw/
-│   ├── processed/
-│   │   ├── train.npy         (7000, 2, 32, 32)
-│   │   ├── val.npy           (1000, 2, 32, 32)
-│   │   ├── test.npy          (2000, 2, 32, 32)
+│   ├── processed/                    (synthetic, the default track)
+│   │   ├── train.npy         (35000, 2, 32, 32)
+│   │   ├── val.npy           (5000, 2, 32, 32)
+│   │   ├── test.npy          (10000, 2, 32, 32)
 │   │   └── norm_params.json
-│   └── generate_data.py
+│   ├── processed_deepmimo/           (real ray-traced, same layout)
+│   ├── generate_data.py
+│   └── prepare_deepmimo.py  (DeepMIMO O1 -> angular-delay tensors)
 │
 ├── models/
 │   ├── __init__.py
@@ -221,10 +290,15 @@ deepcsi-core/
 │   ├── train.py             (PyTorch training pipeline)
 │   ├── evaluate.py          (Evaluation & metric logging)
 │   ├── dct_baseline.py      (2D DCT comparison)
-│   └── weights/
-│       ├── deepcsi_cr4.pt
-│       ├── deepcsi_cr16.pt
-│       └── deepcsi_cr32.pt
+│   ├── pca_baseline.py      (PCA/KLT — the optimal linear compressor)
+│   ├── eigenspectrum.py     (Linear NMSE floor per latent size)
+│   ├── quantize_eval.py     (Feedback bits vs NMSE sweep)
+│   ├── ablation.py          (Generalisation-option sweep)
+│   ├── weights/
+│   │   ├── deepcsi_cr4.pt
+│   │   ├── deepcsi_cr16.pt
+│   │   └── deepcsi_cr32.pt
+│   └── weights_deepmimo/    (same three, real-data track)
 │
 ├── backend/
 │   ├── __init__.py
@@ -240,15 +314,33 @@ deepcsi-core/
 │   ├── metrics.py           (NMSE in dB calculation)
 │   └── seed.py              (Deterministic RNG seed)
 │
-├── results/
+├── results/                 (synthetic track — CSVs are tracked in git)
 │   ├── metrics.csv
 │   ├── nmse_comparison.csv
+│   ├── beamforming_comparison.csv
+│   ├── eigenspectrum.csv
+│   ├── pca_baseline_metrics.csv
+│   ├── dct_baseline_metrics.csv
+│   ├── ablation.csv
+│   ├── training_log_cr{4,16,32}.csv
 │   └── figures/
+│
+├── results_deepmimo/        (real-data track; adds quantization.csv, no ablation)
+│
+├── REAL_DATA.md             (methodology, corrections, withdrawn claims)
 │
 └── tests/
     ├── test_data.py
     ├── test_models.py
-    └── test_metrics.py
+    ├── test_metrics.py
+    ├── test_transforms.py
+    ├── test_eigenspectrum.py
+    ├── test_pca_baseline.py
+    ├── test_quantize.py
+    ├── test_prepare_deepmimo.py
+    ├── test_split_proportions.py
+    ├── test_review_regressions.py
+    └── test_silent_failures.py
 ```
 
 ---
@@ -272,18 +364,30 @@ pip install -r requirements.txt
 ### 2. Generate Synthetic Dataset
 
 ```bash
-python data/generate_data.py
+python data/generate_data.py --samples 50000
 ```
-*Generates 10,000 samples (7k train / 1k val / 2k test) of $2 \times 32 \times 32$ angular-delay CSI matrices with global min-max normalization.*
+*Generates 50,000 samples (35k train / 5k val / 10k test) of $2 \times 32 \times 32$
+angular-delay CSI matrices, scaled to $[0,1]$ about a 0.5 complex zero point with
+the robust quantile scale (`--norm-mode robust`, the default). Takes ~45 s and is
+seeded: the same command reproduces the arrays byte-for-byte.*
+
+> **Pass `--samples 50000`.** The bare command builds a 10,000-sample set, which
+> is a *different dataset* from the one every number in this README was measured
+> on — and it trains to about -9.7 dB at CR=4 rather than -17.11 dB. The sample
+> count is not a free parameter here; see *Getting the weight decay right* above.
 
 ### 3. Train DeepCSI Autoencoders
 
 ```bash
 # Train CR=4, CR=16, and CR=32 models
-python models/train.py --compression-ratio 4 --epochs 25
-python models/train.py --compression-ratio 16 --epochs 25
-python models/train.py --compression-ratio 32 --epochs 25
+python models/train.py --compression-ratio 4  --epochs 60 --weight-decay 2e-6
+python models/train.py --compression-ratio 16 --epochs 60 --weight-decay 2e-6
+python models/train.py --compression-ratio 32 --epochs 60 --weight-decay 2e-6
 ```
+*`--weight-decay 2e-6` is required to reproduce the published figures: the
+default of 0 costs ~6.5 dB at CR=4, and the older `1e-5` is unstable on 35k
+samples. Roughly 35 min per model on a modern laptop CPU (no GPU needed);
+the per-epoch loss and NMSE are written to `results/training_log_cr{4,16,32}.csv`.*
 
 ### 4. Run Model Evaluation & DCT Baseline
 

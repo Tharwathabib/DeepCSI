@@ -60,8 +60,8 @@ def main():
 
     check("Dataset files exist", train_p.exists() and val_p.exists() and test_p.exists() and norm_p.exists(),
           "Missing dataset. Run one of:\n"
-          "         python data/generate_data.py         (synthetic)\n"
-          "         python data/prepare_deepmimo.py      (real ray-traced)")
+          "         python data/generate_data.py --samples 50000   (synthetic, default track)\n"
+          "         python data/prepare_deepmimo.py               (real ray-traced)")
 
     train_data = np.load(train_p)
     val_data = np.load(val_p)
@@ -94,8 +94,15 @@ def main():
 
     for cr in [4, 16, 32]:
         w_file = weights_dir / f"deepcsi_cr{cr}.pt"
+        # Quote the flags the published figures were trained with. A bare
+        # `train.py -cr 4` inherits --epochs 30 and --weight-decay 0, which lands
+        # ~6.5 dB short on the default track, and the resulting weights then make
+        # this same preflight print a number that disagrees with the README.
         check(f"CR={cr} weight file exists ({w_file.name})", w_file.exists(),
-              f"Missing model weights. Run: python models/train.py --compression-ratio {cr}")
+              f"Missing model weights. Run:\n"
+              f"         python models/train.py --compression-ratio {cr} "
+              f"--epochs 60 --weight-decay 2e-6\n"
+              f"         (~35 min per ratio on CPU; see README for the DeepMIMO track's flags)")
 
         try:
             checkpoint = torch.load(w_file, map_location=device, weights_only=False)

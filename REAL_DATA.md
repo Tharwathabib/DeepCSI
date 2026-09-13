@@ -315,6 +315,46 @@ giving rank comparable to synthetic, 42 000 training samples, and no discarded
 users. CR=16 and CR=32 bind; CR=4 at latent 512 still does not, and the build
 prints which ratios bind so this cannot pass silently again.
 
+**Rank alone turned out to be the wrong summary too.** It says whether a latent
+is a bottleneck but puts no number on *how much* is lost, and it ranks the two
+tracks the wrong way round: synthetic has the *lower* rank90 yet PCA does
+*worse* on it (−14.03 dB vs −17.00 dB at CR=4). What actually bounds a linear
+compressor is the variance in the discarded tail, which `models/eigenspectrum.py`
+reports as a floor per latent size (test split, exact covariance):
+
+| latent | synthetic floor | DeepMIMO floor | DeepMIMO PCA |
+|---|---:|---:|---:|
+| 512 (CR=4) | −16.61 dB | **−17.90 dB** | −17.00 dB |
+| 128 (CR=16) | −5.84 dB | −4.45 dB | −4.43 dB |
+| 64 (CR=32) | −3.44 dB | −2.39 dB | −2.36 dB |
+
+DeepMIMO concentrates *more* energy in the top 512 components (98.38% vs 97.82%)
+and *less* in the top 64 (42.3% vs 54.8%) — a longer, thinner tail. That single
+shape difference is why PCA beats DeepCSI at CR=4 on DeepMIMO and is 7.9 dB
+behind at CR=16. PCA sitting 0.02 and 0.03 dB off the floor at CR=16 and CR=32
+is the confirmation that the floor is computed right: a linear method should be
+*optimal* there, and it is. See the side-by-side table in the README.
+
+Two measurement traps, both hit while producing this table:
+
+- **Do not subsample.** With $n$ samples the empirical covariance has rank
+  $\le n-1$, so a subsample makes the leading components look like they explain
+  more than they do, and the floor at large $k$ comes out too optimistic. On the
+  DeepMIMO train split at CR=4, an 8,000-sample estimate gives −18.41 dB against
+  the exact −17.54 dB over all 42,000: **0.87 dB**, all of it flattering the
+  linear baseline at the one ratio where it is competitive (on the 12,000-sample
+  test split the same 8,000 draw costs 0.16 dB — the bias shrinks as the
+  subsample approaches the whole split, which is what makes it easy to miss).
+  The script now uses the full split; `--subsample` exists only to show the bias.
+- **Take the floor from the split you are scoring on.** A floor from *train*
+  does not bound a *test* number. The train floor at CR=16 is −4.38 dB while PCA
+  scores −4.43 dB on test — a linear method apparently beating its own limit,
+  which is really just two different samples. `--split` defaults to `test`.
+
+> Rank figures move by a few components with the sample — 291 in the table above
+> (train, pooled) against 298 in `results_deepmimo/eigenspectrum.csv` (test) are
+> the same quantity on different draws.
+
 ---
 
 ## What changed
@@ -331,6 +371,7 @@ prints which ratios bind so this cannot pass silently again.
 | `frontend/app.py` | Removed hardcoded `−38.3 dB` / `99.98%` offline placeholders and the unconditional PASS badges. |
 | `models/pca_baseline.py` | **New.** PCA/KLT baseline — the optimal linear compressor, fitted on train only. The bar the learned model has to clear. |
 | `models/quantize_eval.py` | **New.** Rate-distortion of the quantised latent: feedback cost in bits rather than scalars. |
+| `models/eigenspectrum.py` | **New.** Turns the intrinsic-rank argument into a number that bounds a result: the variance discarded at latent size `k` is a linear NMSE floor no linear compressor can beat. Explains why PCA nearly ties DeepCSI at CR=4 and collapses at CR=16. Writes `results*/eigenspectrum.csv`. |
 
 ---
 
@@ -361,25 +402,39 @@ streamlit run frontend/app.py
 
 ## What to expect, and what to tell the team
 
-**The NMSE will get much worse. That is the win.** Published references on this
-benchmark (indoor):
+**The NMSE will get much worse. That is the win.** Measured, against published
+references (those are a *different*, indoor benchmark — see the caveat below):
 
-| CR | CsiNet | CRNet | DeepCSI (ours) |
-|---:|-------:|------:|---------------:|
-| 4  | −17.36 dB | −26.99 dB | _measure it_ |
-| 16 |  −8.65 dB | −11.35 dB | _measure it_ |
-| 32 |  −6.24 dB |  −8.93 dB | _measure it_ |
+| CR | CsiNet | CRNet | **DeepCSI (measured)** | ρ | MRT gain |
+|---:|-------:|------:|-----------------------:|---:|---:|
+| 4  | −17.36 dB | −26.99 dB | **−15.14 dB** | 0.9859 | 97.20% |
+| 16 |  −8.65 dB | −11.35 dB | **−12.35 dB** | 0.9719 | 94.48% |
+| 32 |  −6.24 dB |  −8.93 dB |  **−9.87 dB** | 0.9497 | 90.25% |
 
-Landing near −14 to −17 dB at CR=4 is a **good** result: it means the numbers are
-real and comparable to a published paper on the same benchmark. Anything near
-−38 dB means a metric is being computed on offset data again.
+Source: `results_deepmimo/metrics.csv`, 12,000 held-out samples.
+
+The prediction held. −15.14 dB at CR=4 is the right order of magnitude for a
+real benchmark, and nothing lands near −38 dB. The original −15 dB project
+target is met on real ray-traced data.
+
+> **These are not a like-for-like comparison.** CsiNet and CRNet report on a
+> different indoor benchmark; this is DeepMIMO O1 outdoor. Beating the published
+> CR=16 and CR=32 figures means this benchmark is easier at high compression,
+> not that this is a better model. Stated as a limitation, not a claim.
 
 Two things the corrected pipeline gives the presentation that the old one could
-not: an NMSE-vs-CR curve that actually **slopes**, and a beamforming metric that
-**discriminates** between compression ratios instead of reading 99.98% everywhere.
+not: an NMSE-vs-CR curve that actually **slopes** (5.27 dB from CR=4 to CR=32),
+and a beamforming metric that **discriminates** between compression ratios —
+97.20% / 94.48% / 90.25% instead of reading 99.98% everywhere.
 
-`python preflight.py` checks the pipeline end to end before you present
-anything, and reports the same NMSE the README quotes.
+Preflight checks the pipeline end to end before you present anything, and
+reports the same NMSE the README quotes. Point it at this track first — with no
+environment variables it reads the *synthetic* one:
+
+```powershell
+$env:DATA_DIR="data/processed_deepmimo"; $env:WEIGHTS_DIR="models/weights_deepmimo"
+python preflight.py
+```
 
 ---
 

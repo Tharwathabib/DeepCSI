@@ -1,0 +1,4 @@
+dataset_source,split,n_samples_used,rank_90pct_variance,rank_99pct_variance,latent_dim,compression_ratio,variance_retained_percent,residual_variance,linear_nmse_floor_db
+deepmimo_o1_3p5_downloaded_pooled_5t0_10t2_15t2_10t0,test,12000,298,561,64,32,42.2629,0.577371207242293,-2.3854
+deepmimo_o1_3p5_downloaded_pooled_5t0_10t2_15t2_10t0,test,12000,298,561,128,16,64.0917,0.35908329337337297,-4.448
+deepmimo_o1_3p5_downloaded_pooled_5t0_10t2_15t2_10t0,test,12000,298,561,512,4,98.3764,0.01623647146485141,-17.8951

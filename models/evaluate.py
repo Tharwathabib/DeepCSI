@@ -273,7 +273,7 @@ def main():
         raise FileNotFoundError(
             f"Test data not found at {test_path}.\n"
             "Run one of:\n"
-            "  python data/generate_data.py                 (synthetic)\n"
+            "  python data/generate_data.py --samples 50000  (synthetic, default track)\n"
             "  python data/prepare_deepmimo.py               (real ray-traced)"
         )
 

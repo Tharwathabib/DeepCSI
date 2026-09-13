@@ -163,7 +163,10 @@ def main():
     data_dir = Path(args.data_dir)
     test_path = data_dir / "test.npy"
     if not test_path.exists():
-        raise FileNotFoundError(f"Test dataset not found at {test_path}. Run data/generate_data.py first.")
+        raise FileNotFoundError(
+            f"Test dataset not found at {test_path}. "
+            "Run data/generate_data.py --samples 50000 first."
+        )
 
     # Load the normalisation metadata rather than defaulting to None. Without it
     # every metric below is measured on the raw [0,1] tensor, whose 0.5 DC term
