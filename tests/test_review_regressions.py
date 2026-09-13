@@ -75,7 +75,10 @@ def test_refine_widths_are_recovered_from_weights(tmp_path, widths):
     path = tmp_path / "legacy.pt"
     torch.save({"model_state_dict": model.state_dict()}, path)
     loaded = build_from_checkpoint(torch.load(path, map_location="cpu", weights_only=False), 16, "cpu")
-    assert loaded.decoder.refine_widths == widths if hasattr(loaded.decoder, "refine_widths") else True
+    # Assert unconditionally. Guarding this with hasattr() would make the whole
+    # check evaporate the moment the attribute is renamed, which is the same
+    # latent-vacuous assertion this suite exists to stamp out.
+    assert loaded.refine_widths == widths
 
     x = torch.from_numpy(heterogeneous_pair(4, seed=5)[1])
     with torch.no_grad():
