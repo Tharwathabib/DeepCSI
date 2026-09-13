@@ -68,13 +68,26 @@ def evaluate_pca_baseline(train_data: np.ndarray, test_data: np.ndarray,
         k = total_scalars // cr
         basis = components[:k]
 
-        start = time.time()
         latent = (flat_test - mean) @ basis.T
-        encode_ms = ((time.time() - start) / len(test_data)) * 1000.0
-
-        start = time.time()
         recon_flat = latent @ basis + mean
-        decode_ms = ((time.time() - start) / len(test_data)) * 1000.0
+
+        # Time one sample at a time, not the whole batch divided by N. DeepCSI's
+        # encoder/decoder latency is measured at batch size 1 because that is
+        # what a handset actually does -- one CSI report at a time -- and a
+        # batched matmul amortises setup across thousands of samples. Mixing the
+        # two put 0.03 ms beside 0.67 ms in the same CSV column while measuring
+        # different quantities.
+        n_timed = min(100, len(flat_test))
+        t0 = time.time()
+        for i in range(n_timed):
+            (flat_test[i] - mean) @ basis.T
+        encode_ms = ((time.time() - t0) / n_timed) * 1000.0
+
+        one_latent = (flat_test[0] - mean) @ basis.T
+        t0 = time.time()
+        for _ in range(n_timed):
+            one_latent @ basis + mean
+        decode_ms = ((time.time() - t0) / n_timed) * 1000.0
 
         # The autoencoder's sigmoid cannot leave [0,1]; hold PCA to the same
         # output range so the comparison is not handing it an extra degree of

@@ -143,6 +143,35 @@ class PredictResponse(BaseModel):
     reconstructed_matrix_imag: List[List[float]]
 
 
+def normalize_external(raw: np.ndarray, norm_params: Dict):
+    """
+    Map a raw (2, 32, 32) matrix into the normalised domain the models expect.
+
+    Honours how the dataset was actually built. The synthetic set uses one global
+    scale, recorded as min/max. DeepMIMO is normalised PER SAMPLE by its own
+    peak, and its min/max of -0.5/+0.5 encode only the offset convention -- there
+    is no global scale to apply. Scaling a raw DeepMIMO matrix by that 1.0 span
+    maps every element to within a whisker of 0.5, i.e. a constant, and the
+    decoder output then gets denormalised by the wrong factor.
+
+    Returns (normalised, denorm_fn) so the caller can invert exactly what was done.
+    """
+    if norm_params.get("normalisation") == "per_sample_peak":
+        peak = float(max(np.abs(raw[0]).max(), np.abs(raw[1]).max()))
+        if peak <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Matrix is all zeros; it carries no channel to compress.",
+            )
+        scaled = np.clip(raw / (2.0 * peak) + 0.5, 0.0, 1.0).astype(np.float32)
+        return scaled, (lambda x, p=peak: (x - 0.5) * 2.0 * p)
+
+    lo = float(norm_params["min"])
+    hi = float(norm_params["max"])
+    scaled = np.clip((raw - lo) / (hi - lo + 1e-10), 0.0, 1.0).astype(np.float32)
+    return scaled, (lambda x, a=lo, b=hi: x * (b - a) + a)
+
+
 def run_model_inference(sample_np: np.ndarray, compression_ratio: int):
     """
     Execute autoencoder forward pass on a normalized (2, 32, 32) float32 tensor.
@@ -263,6 +292,7 @@ def predict(req: PredictRequest):
         sample_np = TEST_DATA[req.sample_index].astype(np.float32)
         raw_sample = sample_np
         input_source = "benchmark"
+        denorm_fn = None
     else:
         raw_sample = np.stack([
             np.array(req.matrix_real, dtype=np.float32),
@@ -270,11 +300,9 @@ def predict(req: PredictRequest):
         ], axis=0)
         input_source = "custom_json"
 
+        denorm_fn = None
         if req.auto_normalize and NORM_PARAMS is not None:
-            norm_min = float(NORM_PARAMS["min"])
-            norm_max = float(NORM_PARAMS["max"])
-            sample_np = (raw_sample - norm_min) / (norm_max - norm_min + 1e-10)
-            sample_np = np.clip(sample_np, 0.0, 1.0).astype(np.float32)
+            sample_np, denorm_fn = normalize_external(raw_sample, NORM_PARAMS)
         else:
             # auto_normalize=false means the caller asserts their matrix is
             # ALREADY in the normalised [0,1] domain, because that is the only
@@ -302,10 +330,9 @@ def predict(req: PredictRequest):
         sample_np, req.compression_ratio
     )
 
-    if req.sample_index is None and req.auto_normalize and NORM_PARAMS is not None:
-        norm_min = float(NORM_PARAMS["min"])
-        norm_max = float(NORM_PARAMS["max"])
-        denorm_recon = recon_np * (norm_max - norm_min) + norm_min
+    if req.sample_index is None and denorm_fn is not None:
+        # Invert exactly the mapping that was applied, per-sample peak included.
+        denorm_recon = denorm_fn(recon_np)
         orig_out_real = raw_sample[0].tolist()
         orig_out_imag = raw_sample[1].tolist()
         recon_out_real = denorm_recon[0].tolist()
@@ -370,13 +397,27 @@ async def predict_upload(
     # Auto-detect if array is already in [0, 1] range vs raw physical scale
     is_already_normalized = bool(raw_sample.min() >= 0.0 and raw_sample.max() <= 1.0)
 
+    upload_denorm_fn = None
     if auto_normalize and NORM_PARAMS is not None and not is_already_normalized:
-        norm_min = float(NORM_PARAMS["min"])
-        norm_max = float(NORM_PARAMS["max"])
-        sample_np = (raw_sample - norm_min) / (norm_max - norm_min + 1e-10)
-        sample_np = np.clip(sample_np, 0.0, 1.0).astype(np.float32)
+        sample_np, upload_denorm_fn = normalize_external(raw_sample, NORM_PARAMS)
         should_denorm = True
     else:
+        # Same guard as /predict. Reaching here means either the caller disabled
+        # auto-normalisation or the array already looked normalised; in both
+        # cases it is about to be measured with the 0.5 offset removed, so it
+        # must actually be in that domain. Anything else has an offset subtracted
+        # that was never applied, which injects a DC term into the NMSE
+        # denominator and reports a too-optimistic number rather than failing.
+        lo, hi = float(raw_sample.min()), float(raw_sample.max())
+        if lo < -1e-6 or hi > 1.0 + 1e-6:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Uploaded array must be in [0,1] with 0.5 as complex zero when "
+                    f"auto_normalize is off; got range [{lo:.4f}, {hi:.4f}]. Enable "
+                    "auto_normalize, or normalise before upload."
+                ),
+            )
         sample_np = raw_sample
         should_denorm = False
 
@@ -384,10 +425,8 @@ async def predict_upload(
         sample_np, compression_ratio
     )
 
-    if should_denorm and NORM_PARAMS is not None:
-        norm_min = float(NORM_PARAMS["min"])
-        norm_max = float(NORM_PARAMS["max"])
-        denorm_recon = recon_np * (norm_max - norm_min) + norm_min
+    if should_denorm and upload_denorm_fn is not None:
+        denorm_recon = upload_denorm_fn(recon_np)
         orig_out_real = raw_sample[0].tolist()
         orig_out_imag = raw_sample[1].tolist()
         recon_out_real = denorm_recon[0].tolist()

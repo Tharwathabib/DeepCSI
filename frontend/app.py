@@ -617,6 +617,20 @@ def fmt_metric(value, spec: str, dash: str = "&mdash;") -> str:
     return dash if value is None else format(value, spec)
 
 
+def _gain_axis_floor(*series, pad: float = 8.0) -> float:
+    """
+    Lower bound for the beamforming-gain axis, fitted to whatever was measured.
+
+    Returns 0 when no series carries data, so a metrics.csv missing the
+    beamforming column renders a full-range empty chart instead of raising
+    ValueError out of min() and taking the whole panel down.
+    """
+    values = [float(v) for s in series for v in list(s) if pd.notna(v)]
+    if not values:
+        return 0.0
+    return max(0.0, min(values) - pad)
+
+
 nmse_str = fmt_metric(nmse_db_val, ".1f")
 bf_gain_str = fmt_metric(bf_gain_pct, ".2f")
 bf_loss_str = fmt_metric(bf_loss_db, ".2f")
@@ -1008,8 +1022,10 @@ with tab_bench:
                     # Fit to the data. The old [85, 101] was set when every gain
                     # read ~99.98% under the offset bug; with correct metrics the
                     # DCT bars fall to 22-62% and were being clipped clean out of
-                    # the chart mid-demo.
-                    yaxis_range=[max(0.0, min(list(deep_gains) + list(dct_gains)) - 8.0), 101],
+                    # the chart mid-demo. min() over an empty sequence raises, so
+                    # fall back to the full axis when the column is absent rather
+                    # than taking the chart down with a ValueError.
+                    yaxis_range=[_gain_axis_floor(deep_gains, dct_gains), 101],
                     barmode="group",
                     height=340,
                     template="plotly_dark",

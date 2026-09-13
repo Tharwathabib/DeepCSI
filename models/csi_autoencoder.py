@@ -185,6 +185,32 @@ class CSIAutoencoder(nn.Module):
         return reconstruction, latent
 
 
+def infer_refine_widths(state_dict: dict, default=(8, 16)) -> tuple:
+    """
+    Recover the decoder's RefineNet widths from the weights themselves.
+
+    A checkpoint without a `refine_widths` key is not necessarily the current
+    default: the block was widened from (8,) to (8, 16) on this branch, and
+    anything trained before that carries the narrow shape. Assuming the default
+    makes load_state_dict raise, and the API catches that exception and logs it,
+    so the model simply vanishes from /health with no failure anyone notices.
+
+    The widths are the output channels of every conv in a refine block except
+    the last, which returns to the 2 real/imag channels:
+        decoder.res1.body.0.weight  (8, 2, 3, 3)   -> 8
+        decoder.res1.body.3.weight  (16, 8, 3, 3)  -> 16
+        decoder.res1.body.6.weight  (2, 16, 3, 3)  -> output, not a width
+    """
+    convs = sorted(
+        (int(k.split(".")[3]), v.shape[0])
+        for k, v in state_dict.items()
+        if k.startswith("decoder.res1.body.") and k.endswith(".weight") and v.dim() == 4
+    )
+    if len(convs) < 2:
+        return tuple(default)
+    return tuple(out for _, out in convs[:-1])
+
+
 def build_from_checkpoint(checkpoint: dict, compression_ratio: int, device="cpu") -> "CSIAutoencoder":
     """
     Rebuild the exact architecture a checkpoint was trained with, then load it.
@@ -199,11 +225,16 @@ def build_from_checkpoint(checkpoint: dict, compression_ratio: int, device="cpu"
     Centralising the reconstruction is the fix: one place now knows how to turn
     a checkpoint back into a model, so the fields cannot drift apart again.
     """
+    state = checkpoint["model_state_dict"]
+    # Prefer the recorded width; fall back to reading it off the weights rather
+    # than to a hardcoded default, which would be wrong for any checkpoint
+    # predating the (8,) -> (8, 16) widening.
+    widths = checkpoint.get("refine_widths") or infer_refine_widths(state)
     model = CSIAutoencoder(
         compression_ratio=compression_ratio,
-        refine_widths=tuple(checkpoint.get("refine_widths", (8, 16))),
+        refine_widths=tuple(widths),
         arch=checkpoint.get("arch", "csinet"),
     ).to(device)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    model.load_state_dict(state)
     model.eval()
     return model
