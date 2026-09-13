@@ -376,7 +376,11 @@ seeded: the same command reproduces the arrays byte-for-byte.*
 > on — and it trains to about -9.7 dB at CR=4 rather than -17.11 dB. The sample
 > count is not a free parameter here; see *Getting the weight decay right* above.
 
-### 3. Train DeepCSI Autoencoders
+### 3. Train DeepCSI Autoencoders — *optional, the weights are in the repo*
+
+The three checkpoints per track are tracked in git (11 MB each track), so after
+step 2 you can skip straight to step 4 and `preflight.py` will pass. Retrain only
+if you are reproducing the numbers or changing the model.
 
 ```bash
 # Train CR=4, CR=16, and CR=32 models

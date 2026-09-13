@@ -22,8 +22,18 @@ data/processed_deepmimo/
 # Re-fetch with deepmimo.download('o1_3p5').
 deepmimo_scenarios/
 
-# Models
+# Models. Same policy as the results CSVs below, for the same reason: the three
+# production checkpoints per track ARE tracked. They are 11 MB per track, they
+# are the artifact every published number was measured from, and regenerating
+# them costs ~35 minutes of CPU per compression ratio -- so without them a
+# reader cannot check a single figure in the README without half a day of
+# training. Pairing them with the wrong dataset is caught, not silent:
+# preflight.py compares the checkpoint's data_source against norm_params.json.
+# Ablation sweep checkpoints stay out (results/* already covers them).
 models/weights/*.pt
+!models/weights/deepcsi_cr4.pt
+!models/weights/deepcsi_cr16.pt
+!models/weights/deepcsi_cr32.pt
 !models/weights/.gitkeep
 
 # Results. Generated output is ignored, with one deliberate exception: the CSVs
@@ -43,8 +53,14 @@ results/figures/*
 results_deepmimo/**
 !results_deepmimo/*.csv
 
-# Weights for the alternate dataset track
-models/weights_deepmimo/
+# Weights for the alternate dataset track. Note this ignores the directory's
+# CONTENTS rather than the directory itself -- a negation cannot re-include a
+# file underneath an excluded directory, so `models/weights_deepmimo/` would
+# make the three exceptions below dead letters.
+models/weights_deepmimo/*
+!models/weights_deepmimo/deepcsi_cr4.pt
+!models/weights_deepmimo/deepcsi_cr16.pt
+!models/weights_deepmimo/deepcsi_cr32.pt
 
 # IDE / OS
 .vscode/
