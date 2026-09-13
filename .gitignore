@@ -67,3 +67,5 @@ models/weights_deepmimo/*
 .idea/
 .DS_Store
 Thumbs.db
+.agents/
+
