@@ -48,19 +48,14 @@ def test_norm_params_json():
 
 
 # ---------------------------------------------------------------------------
-# Real-data tracks: tensors produced by data/prepare_cost2100.py and
-# data/prepare_deepmimo.py. Both land in the same (N, 2, 32, 32) float32 format
-# with the same csinet_offset normalisation contract, so they share one set of
-# checks. Each is skipped until that dataset has been prepared.
+# Real-data track: tensors produced by data/prepare_deepmimo.py, in the same
+# (N, 2, 32, 32) float32 format and csinet_offset normalisation contract as the
+# synthetic set. Skipped until the dataset has been prepared.
 # ---------------------------------------------------------------------------
 
 REAL_DATASETS = {
-    "cost2100": (Path("data/processed_cost2100"), "data/prepare_cost2100.py"),
     "deepmimo": (Path("data/processed_deepmimo"), "data/prepare_deepmimo.py"),
 }
-
-# Backwards-compatible alias for the COST2100 path used by older tests.
-COST2100_DIR = REAL_DATASETS["cost2100"][0]
 
 real_dataset = pytest.mark.parametrize("dataset", sorted(REAL_DATASETS))
 
@@ -71,10 +66,6 @@ def _require(dataset):
     if not (directory / "train.npy").exists():
         pytest.skip(f"{dataset} dataset not prepared. Run {script}.")
     return directory
-
-
-def _require_cost2100():
-    return _require("cost2100")
 
 
 @real_dataset

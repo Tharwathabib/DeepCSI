@@ -251,7 +251,7 @@ def main():
             f"Training or validation data not found in {data_path}.\n"
             "Run one of:\n"
             "  python data/generate_data.py                 (synthetic)\n"
-            "  python data/prepare_cost2100.py --mat-dir ... (real COST2100)"
+            "  python data/prepare_deepmimo.py               (real ray-traced)"
         )
 
     # Carry the dataset's normalisation metadata into the checkpoint so a weight

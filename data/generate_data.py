@@ -86,7 +86,7 @@ def normalize_robust(raw_tensor: np.ndarray, quantile: float = 0.9995):
     than a DCT baseline that needs no training at all.
 
     Instead we set the scale from a high quantile of |h| and clip the rare
-    outliers beyond it, which is how the released COST2100/CsiNet data is
+    outliers beyond it, which is how the released CsiNet reference data is
     prepared. The mapping is
 
         x = clip(h / (2 * S) + 0.5, 0, 1),   S = quantile(|h|, q)
@@ -113,7 +113,7 @@ def main():
     parser.add_argument(
         "--norm-mode", choices=["robust", "minmax"], default="robust",
         help="robust (default): quantile scale with 0.5 as the zero point, matching "
-             "the COST2100 convention. minmax: the original global min-max, kept "
+             "the CsiNet convention. minmax: the original global min-max, kept "
              "for reproducing earlier runs -- it squashes sparse CSI and the model "
              "will not learn from it."
     )
@@ -175,7 +175,7 @@ def main():
     np.save(output_dir / "val.npy", val_data)
     np.save(output_dir / "test.npy", test_data)
 
-    # Save normalization parameters. offset/scheme mirror the COST2100 metadata
+    # Save normalization parameters. offset/scheme mirror the CsiNet metadata
     # so utils.metrics and the backend treat both datasets identically.
     norm_params = {
         "source": f"synthetic_3gpp_inspired_{args.norm_mode}",

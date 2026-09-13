@@ -1,10 +1,10 @@
-method,compression_ratio,latent_dim,scalar_reduction_percent,nmse_db_mean,nmse_db_std,nmse_db_aggregate,cosine_similarity_rho,beamforming_gain_mean,beamforming_gain_std,beamforming_loss_db,spectral_efficiency_bps_hz,nmse_db_p5,nmse_db_median,nmse_db_p95,nmse_db_worst,encoder_ms_ue,decoder_ms_gnb,inference_ms,encoder_params,decoder_params,index_overhead_bits,feedback_bits_at_6bit
-DeepCSI,4,512,75.0,-18.4428,3.1053,-17.1072,0.9913,0.9827,0.0207,-0.0756,3.4363,-22.847,-18.8432,-12.6529,-3.8908,0.4802,1.2568,0.3862,1049406.0,1053986.0,,
-DeepCSI,16,128,93.75,-12.8509,3.9717,-10.9715,0.9616,0.9269,0.0835,-0.3296,3.3541,-19.1038,-13.0091,-6.039,1.2342,0.4631,1.5438,0.3309,262590.0,267554.0,,
-DeepCSI,32,64,96.88,-8.9737,3.6492,-7.5276,0.9101,0.8371,0.1434,-0.7724,3.2033,-15.2343,-8.8939,-3.1187,0.9083,0.3528,1.1393,0.2941,131454.0,136482.0,,
-DCT Baseline,4,512,75.0,-11.18,1.45,-10.97,0.9594,0.9205,0.0226,-0.36,3.3509,-14.0506,-10.8431,-9.5189,-7.6427,,,0.262,,,1656.0,4728.0
-DCT Baseline,16,128,93.75,-4.15,0.79,-4.08,0.7845,0.6172,0.0668,-2.1,2.8363,-5.6419,-3.9623,-3.2474,-2.2637,,,0.245,,,686.0,1454.0
-DCT Baseline,32,64,96.88,-2.5,0.52,-2.47,0.666,0.446,0.0681,-3.51,2.4383,-3.487,-2.3957,-1.8825,-1.2035,,,0.245,,,407.0,791.0
-PCA Baseline,4,512,75.0,-15.43,3.21,-14.03,0.9798,0.9605,0.0428,-0.17,3.4054,-19.764,-15.9555,-9.2602,-2.5274,0.0242,0.0273,0.0516,1048576.0,1048576.0,0.0,3072.0
-PCA Baseline,16,128,93.75,-5.01,2.34,-4.37,0.7769,0.6348,0.2113,-1.97,2.773,-8.5997,-5.2092,-0.6855,0.0151,0.0111,0.0157,0.0268,262144.0,262144.0,0.0,768.0
-PCA Baseline,32,64,96.88,-2.84,1.73,-2.5,0.6218,0.4377,0.222,-3.59,2.229,-5.5729,-2.9143,-0.0216,0.0303,0.0083,0.0123,0.0207,131072.0,131072.0,0.0,384.0
+dataset_source,data_dir,n_test,method,compression_ratio,latent_dim,scalar_reduction_percent,nmse_db_mean,nmse_db_std,nmse_db_aggregate,cosine_similarity_rho,beamforming_gain_mean,beamforming_gain_std,beamforming_loss_db,spectral_efficiency_bps_hz,nmse_db_p5,nmse_db_median,nmse_db_p95,nmse_db_worst,encoder_ms_ue,decoder_ms_gnb,inference_ms,encoder_params,decoder_params,index_overhead_bits,feedback_bits_at_6bit
+synthetic_3gpp_inspired_robust,data/processed_big,10000,DeepCSI,4,512,75.0,-18.4428,3.1053,-17.1072,0.9913,0.9827,0.0207,-0.0756,3.4363,-22.847,-18.8432,-12.6529,-3.8908,0.63,1.7249,0.3968,1049406.0,1053986.0,,
+synthetic_3gpp_inspired_robust,data/processed_big,10000,DeepCSI,16,128,93.75,-12.8509,3.9717,-10.9715,0.9616,0.9269,0.0835,-0.3296,3.3541,-19.1038,-13.0091,-6.039,1.2342,0.4756,1.5031,0.3525,262590.0,267554.0,,
+synthetic_3gpp_inspired_robust,data/processed_big,10000,DeepCSI,32,64,96.88,-8.9737,3.6492,-7.5276,0.9101,0.8371,0.1434,-0.7724,3.2033,-15.2343,-8.8939,-3.1187,0.9083,0.5551,1.8889,0.4187,131454.0,136482.0,,
+synthetic_3gpp_inspired_robust,data/processed_big,10000,DCT Baseline,4,512,75.0,-11.18,1.45,-10.97,0.9594,0.9205,0.0226,-0.36,3.3509,-14.0506,-10.8431,-9.5189,-7.6427,,,0.609,,,1656.0,4728.0
+synthetic_3gpp_inspired_robust,data/processed_big,10000,DCT Baseline,16,128,93.75,-4.15,0.79,-4.08,0.7845,0.6172,0.0668,-2.1,2.8363,-5.6419,-3.9623,-3.2474,-2.2637,,,0.549,,,686.0,1454.0
+synthetic_3gpp_inspired_robust,data/processed_big,10000,DCT Baseline,32,64,96.88,-2.5,0.52,-2.47,0.666,0.446,0.0681,-3.51,2.4383,-3.487,-2.3957,-1.8825,-1.2035,,,0.537,,,407.0,791.0
+synthetic_3gpp_inspired_robust,data/processed_big,10000,PCA Baseline,4,512,75.0,-15.43,3.21,-14.03,0.9798,0.9605,0.0428,-0.17,3.4054,-19.764,-15.9555,-9.2602,-2.5274,0.03,0.0261,0.0561,1048576.0,1048576.0,0.0,3072.0
+synthetic_3gpp_inspired_robust,data/processed_big,10000,PCA Baseline,16,128,93.75,-5.01,2.34,-4.37,0.7769,0.6348,0.2113,-1.97,2.773,-8.5997,-5.2092,-0.6855,0.0151,0.0217,0.0213,0.0431,262144.0,262144.0,0.0,768.0
+synthetic_3gpp_inspired_robust,data/processed_big,10000,PCA Baseline,32,64,96.88,-2.84,1.73,-2.5,0.6218,0.4377,0.222,-3.59,2.229,-5.5729,-2.9143,-0.0216,0.0303,0.0102,0.0161,0.0264,131072.0,131072.0,0.0,384.0

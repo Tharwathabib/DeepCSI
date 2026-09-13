@@ -276,6 +276,26 @@ def predict(req: PredictRequest):
             sample_np = (raw_sample - norm_min) / (norm_max - norm_min + 1e-10)
             sample_np = np.clip(sample_np, 0.0, 1.0).astype(np.float32)
         else:
+            # auto_normalize=false means the caller asserts their matrix is
+            # ALREADY in the normalised [0,1] domain, because that is the only
+            # thing the model and the metrics can interpret. Reject anything
+            # else rather than measuring it: the metrics subtract the 0.5 offset
+            # unconditionally, so a zero-centred matrix would have an offset
+            # removed that was never applied, injecting a DC term into the NMSE
+            # denominator. That is the same defect as the -38 dB bug, pointing
+            # the other way, and it would report a too-optimistic number instead
+            # of failing.
+            lo, hi = float(raw_sample.min()), float(raw_sample.max())
+            if lo < -1e-6 or hi > 1.0 + 1e-6:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"auto_normalize=false requires a matrix already in [0,1] with "
+                        f"0.5 as complex zero; got range [{lo:.4f}, {hi:.4f}]. Send "
+                        "auto_normalize=true to have the server scale it, or normalise "
+                        "it yourself before sending."
+                    ),
+                )
             sample_np = raw_sample
 
     recon_np, inference_ms, nmse_val, bf_gain_val, bf_loss_val, latent_dim = run_model_inference(

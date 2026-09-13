@@ -1005,7 +1005,11 @@ with tab_bench:
                 fig_bar.update_layout(
                     title="Downstream MRT Beamforming Power Retention (%)",
                     yaxis_title="Power Gain (% of ideal)",
-                    yaxis_range=[85, 101],
+                    # Fit to the data. The old [85, 101] was set when every gain
+                    # read ~99.98% under the offset bug; with correct metrics the
+                    # DCT bars fall to 22-62% and were being clipped clean out of
+                    # the chart mid-demo.
+                    yaxis_range=[max(0.0, min(list(deep_gains) + list(dct_gains)) - 8.0), 101],
                     barmode="group",
                     height=340,
                     template="plotly_dark",
@@ -1029,7 +1033,13 @@ with tab_bench:
                 overhead = float(row["scalar_reduction_percent"])
                 nmse = float(row[NMSE_COL])
                 lat = float(row["inference_ms"])
-                bf_gain = float(row.get("beamforming_gain_mean", 0.9998)) * 100.0
+                # No 0.9998 default. That figure came from measuring rho without
+                # removing the 0.5 offset, where a constant-output model also
+                # scores 99.94% -- it is the number this branch exists to delete,
+                # and a fallback is a live path back to it. NaN renders as a dash.
+                bf_gain = float(row["beamforming_gain_mean"]) * 100.0 \
+                    if "beamforming_gain_mean" in row and pd.notna(row["beamforming_gain_mean"]) \
+                    else float("nan")
 
                 # NMSE color coding
                 if nmse > -15.0:
@@ -1049,7 +1059,8 @@ with tab_bench:
                 else:
                     overhead_badge = f"<span style='background:rgba(59,130,246,0.15); color:#3B82F6; padding:2px 6px; border-radius:4px; font-weight:600; font-family:monospace;'>{overhead:.1f}%</span>"
 
-                bf_badge = f"<span style='background:rgba(56,189,248,0.15); color:#38BDF8; border:1px solid rgba(56,189,248,0.3); padding:2px 6px; border-radius:4px; font-weight:600; font-family:monospace;'>{bf_gain:.2f}%</span>"
+                bf_text = "&mdash;" if pd.isna(bf_gain) else f"{bf_gain:.2f}%"
+                bf_badge = f"<span style='background:rgba(56,189,248,0.15); color:#38BDF8; border:1px solid rgba(56,189,248,0.3); padding:2px 6px; border-radius:4px; font-weight:600; font-family:monospace;'>{bf_text}</span>"
                 lat_text = f"<span style='font-family:monospace; color:{'#10B981' if lat < 0.15 else '#94A3B8'}; font-weight:500;'>{lat:.3f} ms</span>"
                 method_label = f"<span style='font-weight:600; color:{'#38BDF8' if method == 'DeepCSI' else '#CBD5E1'};'>{method}</span>"
 

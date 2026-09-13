@@ -1,9 +1,8 @@
 # DeepCSI — real-data track (`karim/real-data`)
 
-Replaces the synthetic CSI surrogate with the **COST2100** benchmark released
-with CsiNet, and fixes three measurement bugs that made the previous results
-unciteable. Owned by Karim (preprocessing / splitting / normalisation / data
-validation).
+Replaces the synthetic CSI surrogate with **DeepMIMO** ray-traced channels, and
+fixes the measurement bugs that made the previous results unciteable. Owned by
+Karim (preprocessing / splitting / normalisation / data validation).
 
 The synthetic path is untouched — `data/generate_data.py` still works exactly as
 before, and `main` is unaffected.
@@ -35,7 +34,7 @@ NMSE on de-offset channel      :   -9.30 dB   <- what CsiNet reports
 ```
 
 This is arithmetic, not data. The old code would have reported ≈−38 dB on real
-COST2100 data too. CsiNet computes NMSE on `(x_real − 0.5) + 1j(x_imag − 0.5)`,
+ray-traced data too. CsiNet computes NMSE on `(x_real − 0.5) + 1j(x_imag − 0.5)`,
 which is what `nmse_db_aggregate(..., norm_params)` now does.
 
 ### 2. ρ / beamforming gain had the same offset problem
@@ -86,7 +85,8 @@ scored −10.73 dB on the same data, proving the data was compressible and the
 representation was the problem.
 
 `normalize_robust()` now sets the scale from a high quantile of `|h|` and clips
-the outliers beyond it, which is how the released COST2100 data is prepared:
+the outliers beyond it, which is how the released CsiNet reference data is
+prepared:
 
 ```
 x = clip(h / (2S) + 0.5, 0, 1),   S = quantile(|h|, 0.9995)
@@ -95,7 +95,7 @@ x = clip(h / (2S) + 0.5, 0, 1),   S = quantile(|h|, 0.9995)
 std rose 0.0066 → 0.0239 (3.6×) while clipping only 0.05% of values, and CR=4
 went **+0.72 dB → −11.36 dB**. The recorded `min`/`max` of `−S`/`+S` make the
 existing affine denormalisation reduce to exactly `(x − 0.5) · 2S`, so the
-metrics and backend treat synthetic and COST2100 data identically.
+metrics and backend treat synthetic and DeepMIMO data identically.
 
 `--norm-mode minmax` still reproduces the old behaviour if anyone needs it.
 
@@ -105,19 +105,17 @@ metrics and backend treat synthetic and COST2100 data identically.
 
 ## The DeepMIMO track (what actually shipped)
 
-The COST2100 download is blocked (Google Drive folder-mode `gdown` returns
-nothing for files over ~100 MB). **DeepMIMO** replaced it and is arguably better:
-ray-traced from real building geometry rather than a statistical model, and it
-downloads from Python with no quota to hit.
+**DeepMIMO** is the real-data source: ray-traced from real building geometry
+rather than a statistical model, free, and downloadable from Python with no
+quota to hit.
 
 ```python
 import deepmimo as dm
 dm.download('o1_3p5')          # O1 urban canyon, 3.5 GHz, 2.27 GB
 ```
 
-Unlike COST2100, DeepMIMO ships raw ray-tracing rather than pre-made
-angular-delay tensors, so it forces the **full pipeline** into the execution
-path for the first time:
+DeepMIMO ships raw ray-tracing rather than pre-made angular-delay tensors, so
+it forces the **full pipeline** into the execution path for the first time:
 
 ```
 ray tracing -> H(32 antennas x 256 subcarriers)
@@ -239,10 +237,25 @@ Two further corrections to what this section used to claim:
   baseline with `--weight-decay 0`; for DeepMIMO it is `--loss nmse
   --weight-decay 0` and no augmentation.
 
-The sweep needs re-running at `--weight-decay 0` before any of it is quoted.
-It is kept here rather than deleted because the negative result — that bundling
-four plausible changes cost 5.57 dB — still stands as a caution, even though
-the per-variant attributions do not.
+**The re-run is done** — `results/ablation_wd0.csv`, CR=16, 50 epochs, every arm
+at `--weight-decay 0`:
+
+| variant | val NMSE | vs baseline | verdict | original verdict |
+|---|---:|---:|---|---|
+| **augment** | **−5.31 dB** | **−2.00** | helps | −0.22 helped |
+| **nmse_loss** | **−5.09 dB** | **−1.78** | helps | +2.43 *"hurt"* |
+| **crnet_encoder** | **−4.79 dB** | **−1.48** | helps | +0.58 *"hurt"* |
+| baseline | −3.31 dB | — | reference | — |
+| cosine_lr | −2.92 dB | +0.39 | hurts | +1.58 hurt |
+| all_combined | −2.07 dB | +1.24 | hurts | +5.57 hurt |
+
+Two verdicts invert outright: `nmse_loss` and `crnet_encoder` were both recorded
+as harmful and are both worth 1.5–1.8 dB. The table above is kept beside them so
+the failure mode stays visible.
+
+The one conclusion that survived is the one about bundling: every option except
+`cosine_lr` helps individually, and applying all four together is still 1.24 dB
+**worse** than the baseline. Their interactions are not additive.
 
 ---
 
@@ -308,7 +321,7 @@ prints which ratios bind so this cannot pass silently again.
 
 | File | Change |
 |---|---|
-| `data/prepare_cost2100.py` | **New.** Loads COST2100 `.mat` → `(N,2,32,32)` float32 + `norm_params.json`. Splits ship with the dataset, so no normalisation leakage. |
+| `data/prepare_deepmimo.py` | **New.** Ray tracing → `(N,2,32,32)` float32 + `norm_params.json`. Pools several tx:rx pairs, shuffles before splitting, reports intrinsic rank and which compression ratios actually bind. |
 | `utils/metrics.py` | `offset_from_norm_params`, `to_complex_*`, `nmse_db_aggregate*`, `nmse_per_sample_db`. ρ and gain take `norm_params`. |
 | `models/csi_autoencoder.py` | Decoder RefineNet blocks widened `2→8→2` → `2→8→16→2`, matching CsiNet. Width is a parameter, so the old block stays available for ablation. |
 | `models/train.py` | `--train-samples`, `--patience`, `--amp`, per-epoch CSV log; LR schedule now steps on the same metric used for checkpoint selection. |
@@ -316,29 +329,29 @@ prints which ratios bind so this cannot pass silently again.
 | `models/dct_baseline.py` | Same de-offset treatment, so the comparison is like-for-like. |
 | `backend/app.py`, `preflight.py` | De-offset metrics; honour `DATA_DIR`/`WEIGHTS_DIR`; warn on dataset/weights mismatch. |
 | `frontend/app.py` | Removed hardcoded `−38.3 dB` / `99.98%` offline placeholders and the unconditional PASS badges. |
-| `notebooks/deepcsi_colab.ipynb` | **New.** Runs the whole pipeline on a free Colab GPU. |
+| `models/pca_baseline.py` | **New.** PCA/KLT baseline — the optimal linear compressor, fitted on train only. The bar the learned model has to clear. |
+| `models/quantize_eval.py` | **New.** Rate-distortion of the quantised latent: feedback cost in bits rather than scalars. |
 
 ---
 
 ## Running it
 
-### On Colab (training)
+### Training
 
-There is no NVIDIA GPU on the dev laptop (AMD iGPU, `torch+cpu`), so training
-runs on a free Colab T4. The 2–3 GB dataset download happens **inside Colab**;
-nothing lands on your disk.
+Everything runs on CPU. A full CR sweep on the pooled DeepMIMO set is roughly
+30-40 minutes per ratio on a laptop; no GPU is required and none was used.
 
-Open `notebooks/deepcsi_colab.ipynb` → `Runtime → Change runtime type → T4 GPU`
-→ run all. It downloads COST2100, prepares tensors, trains CR = 4/16/32,
-evaluates, runs sanity checks, and zips ~25 MB of artifacts to download.
+```bash
+python data/prepare_deepmimo.py --output-dir data/processed_deepmimo
+python models/train.py --data-dir data/processed_deepmimo -cr 4 \
+    --epochs 60 --loss nmse --weight-decay 0 --output-dir models/weights_deepmimo
+```
 
 ### Locally (demo)
 
 ```bash
-unzip -o deepcsi_artifacts.zip -d .
-
 # PowerShell
-$env:DATA_DIR="data/processed_cost2100"
+$env:DATA_DIR="data/processed_deepmimo"
 python preflight.py
 uvicorn backend.app:app --reload --port 8000
 streamlit run frontend/app.py
@@ -365,8 +378,8 @@ Two things the corrected pipeline gives the presentation that the old one could
 not: an NMSE-vs-CR curve that actually **slopes**, and a beamforming metric that
 **discriminates** between compression ratios instead of reading 99.98% everywhere.
 
-The notebook's section 8 checks all three of these automatically before you
-present anything.
+`python preflight.py` checks the pipeline end to end before you present
+anything, and reports the same NMSE the README quotes.
 
 ---
 
@@ -375,13 +388,13 @@ present anything.
 - **The DCT baseline is still credited too generously.** It keeps the top K
   coefficients but never pays for transmitting *which* K (~11 bits each at
   K=128), so its real feedback cost is understated versus a fixed-size latent.
-- **The FFT pipeline is not implemented.** `utils/transforms.py` has working
-  `spatial_frequency_to_angular_delay` / `truncate_delay` helpers that nothing
-  calls. COST2100 ships pre-truncated to 32 delay taps, so the README's
-  32×256 → 2D FFT → 32×32 flow remains unbuilt.
-- **Latent dims are float counts, not a bitstream.** "93.75% reduction" is a
-  scalar-dimension claim, not a bandwidth claim. Quantisation and entropy coding
-  are future work.
-- **COST2100 is a channel model, not measurements.** It is the standard
-  benchmark for this task, but it is simulated — same category as the synthetic
-  generator, just validated and comparable to published work.
+- **No comparison on a shared published benchmark.** CsiNet and CRNet report on
+  COST2100, which is a paid dataset and out of scope here. Our DeepMIMO figures
+  exceed the published ones at CR=16 and CR=32, but that is a different and
+  evidently easier benchmark, not a better model. This is an accepted limitation,
+  not outstanding work.
+- **Quantisation is post-training.** A quantisation-aware straight-through
+  estimator would recover part of the 2- and 3-bit collapse. Not attempted.
+- **DeepMIMO is ray-traced, not measured.** It is deterministic propagation
+  through real building geometry, which is a large step up from a statistical
+  generator, but it is still simulation.

@@ -11,7 +11,7 @@ skips:
                 -> per-sample normalisation to [0,1] with 0.5 as complex zero
                 -> train / val / test split
 
-Unlike COST2100, DeepMIMO is ray-traced from real building geometry, so the
+DeepMIMO is ray-traced from real building geometry, so the
 channels carry genuine spatial structure -- and unlike the synthetic generator,
 nothing here is invented.
 
@@ -121,26 +121,60 @@ def clean(H: np.ndarray) -> tuple:
     return H, report
 
 
-def to_angular_delay(H_sf: np.ndarray) -> tuple:
-    """2D DFT, then truncate to the first 32 delay taps. Reports what truncation costs."""
-    H_ad_full = spatial_frequency_to_angular_delay(H_sf)
-    retention = compute_energy_retention(H_ad_full, max_delay=N_DELAYS)
+def to_angular_delay(H_sf: np.ndarray, chunk: int = 2000) -> tuple:
+    """
+    2D DFT, then truncate to the first 32 delay taps. Reports what truncation costs.
 
-    # Sample the per-user distribution at random. Users arrive sorted by index
-    # and are loaded in chunks, so the first N rows are one contiguous patch of
-    # the grid rather than a sample of it -- that alone moved the reported
-    # median by 11 points.
-    n_probe = min(2000, len(H_ad_full))
-    probe = np.random.default_rng(0).choice(len(H_ad_full), size=n_probe, replace=False)
-    per_sample = np.array([
-        compute_energy_retention(H_ad_full[i], max_delay=N_DELAYS) for i in probe
-    ])
+    Transforms in chunks and truncates each one before moving on. The full-band
+    intermediate is the memory hazard: at 60 000 pooled users the (N, 32, 256)
+    array is ~3.9 GB as complex64, and numpy's FFT promotes to complex128, so
+    doing this in one call peaks near 20 GB for an output that is immediately
+    reduced 8x. That fits on a workstation and OOMs on the free Colab runtime
+    the docs point people at.
+
+    Chunking holds the peak to roughly `chunk` x 32 x 256 x 16 bytes (~260 MB at
+    the default) and changes no result: the aggregate ratio is accumulated from
+    per-chunk energy sums rather than computed over one big array.
+    """
+    n = len(H_sf)
+    # Choose the probe indices up front so the per-user sample is drawn from the
+    # whole grid, not from whichever chunk happens to be in memory. Users arrive
+    # sorted by grid position, so a contiguous sample is one patch of street --
+    # that bias alone moved the reported median by 11 points.
+    n_probe = min(2000, n)
+    probe = set(np.random.default_rng(0).choice(n, size=n_probe, replace=False).tolist())
+
+    out = np.empty((n, N_ANTENNAS, N_DELAYS), dtype=np.complex64)
+    trunc_energy = 0.0
+    total_energy = 0.0
+    per_sample = []
+
+    for start in range(0, n, chunk):
+        stop = min(start + chunk, n)
+        ad = spatial_frequency_to_angular_delay(H_sf[start:stop])
+
+        e_total = np.sum(np.abs(ad) ** 2, axis=(1, 2))
+        e_trunc = np.sum(np.abs(ad[:, :, :N_DELAYS]) ** 2, axis=(1, 2))
+        total_energy += float(e_total.sum())
+        trunc_energy += float(e_trunc.sum())
+
+        for j in range(stop - start):
+            if (start + j) in probe:
+                per_sample.append(
+                    float(e_trunc[j] / e_total[j] * 100.0) if e_total[j] > 0 else 0.0
+                )
+
+        out[start:stop] = truncate_delay(ad, N_DELAYS).astype(np.complex64)
+        del ad
+
+    retention = trunc_energy / total_energy * 100.0 if total_energy > 0 else 0.0
+    per_sample = np.array(per_sample)
     print(f"Delay truncation {N_SUBCARRIERS} -> {N_DELAYS} taps: "
           f"{retention:.2f}% of total energy retained "
           f"(per-user p5 {np.percentile(per_sample, 5):.2f}%, "
           f"median {np.median(per_sample):.2f}%, "
           f"{np.mean(per_sample >= 90) * 100:.1f}% of users >=90%)")
-    return truncate_delay(H_ad_full, N_DELAYS), {
+    return out, {
         "energy_retention_percent": round(float(retention), 3),
         "energy_retention_p5_percent": round(float(np.percentile(per_sample, 5)), 3),
         "energy_retention_median_percent": round(float(np.median(per_sample)), 3),

@@ -192,8 +192,8 @@ half of DCT's payload.
 
 > **Scope:** these numbers come from the synthetic 3GPP-*inspired* generator, not
 > a validated channel model, so they are **not comparable to published results**
-> and should not be quoted as such. The COST2100 track in `REAL_DATA.md` exists
-> to produce numbers that are; it is blocked only on the dataset download.
+> and should not be quoted as such. The DeepMIMO figures above are the ones
+> measured on real ray-traced propagation — quote those.
 
 *Scalar accounting note: DeepCSI compresses the $2 \times 32 \times 32 = 2048$ scalar angular-delay representation down to $128$ float32 latent values at $\text{CR}=16$, representing a $93.75\%$ reduction in uplink feedback scalar dimension.*
 

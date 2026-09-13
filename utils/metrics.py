@@ -61,7 +61,7 @@ def offset_from_norm_params(norm_params: Optional[dict]) -> float:
 
         h  proportional to  x - (-min / (max - min))
 
-    For the CsiNet/COST2100 data (min=-0.5, max=0.5) this evaluates to 0.5,
+    For CsiNet-convention data (min=-0.5, max=0.5) this evaluates to 0.5,
     matching the reference implementation's `x_real - 0.5 + 1j * (x_imag - 0.5)`.
     For the synthetic min-max data it recovers the correct scheme-specific shift.
 

@@ -1,10 +1,10 @@
-method,compression_ratio,latent_dim,scalar_reduction_percent,nmse_db_mean,nmse_db_std,nmse_db_aggregate,cosine_similarity_rho,beamforming_gain_mean,beamforming_gain_std,beamforming_loss_db,spectral_efficiency_bps_hz,nmse_db_p5,nmse_db_median,nmse_db_p95,nmse_db_worst,encoder_ms_ue,decoder_ms_gnb,inference_ms,encoder_params,decoder_params
-DeepCSI,4,512,75.0,-15.5783,1.7964,-15.1413,0.9859,0.972,0.0181,-0.1234,3.422,-18.0871,-15.7641,-12.3716,-3.1967,0.5108,1.3381,0.3471,1049406.0,1053986.0
-DeepCSI,16,128,93.75,-12.6521,1.5731,-12.3492,0.9719,0.9448,0.0239,-0.2467,3.3847,-15.0207,-12.7941,-9.9139,-4.7097,0.3809,1.1972,0.2841,262590.0,267554.0
-DeepCSI,32,64,96.88,-10.1054,1.3292,-9.8719,0.9497,0.9025,0.0411,-0.4455,3.3242,-11.8954,-10.2677,-7.6692,-2.0036,0.4943,1.5665,0.2773,131454.0,136482.0
-DCT Baseline,4,512,75.0,-6.64,1.66,-6.37,0.8876,0.7898,0.0795,-1.03,3.1477,-10.0349,-6.1154,-4.8804,-4.1323,,,0.307,,
-DCT Baseline,16,128,93.75,-1.82,0.42,-1.8,0.6079,0.3721,0.0611,-4.29,2.2267,-2.5178,-1.7831,-1.2309,-0.9675,,,0.293,,
-DCT Baseline,32,64,96.88,-0.96,0.24,-0.95,0.467,0.22,0.0413,-6.58,1.6665,-1.3665,-0.9444,-0.6325,-0.4756,,,0.307,,
-PCA Baseline,4,512,75.0,-21.13,5.8,-17.0,0.9897,0.9802,0.0445,-0.09,3.4316,-30.8327,-21.5359,-11.3845,-0.9056,0.0266,0.0273,0.0539,1048576.0,1048576.0
-PCA Baseline,16,128,93.75,-6.11,4.26,-4.43,0.7653,0.6417,0.2816,-1.93,2.706,-14.0424,-5.6618,-0.1147,0.0005,0.0114,0.015,0.0263,262144.0,262144.0
-PCA Baseline,32,64,96.88,-3.55,3.74,-2.36,0.5642,0.4244,0.3345,-3.72,1.9615,-11.0387,-2.3841,-0.0081,0.0022,0.0087,0.0126,0.0213,131072.0,131072.0
+dataset_source,data_dir,n_test,method,compression_ratio,latent_dim,scalar_reduction_percent,nmse_db_mean,nmse_db_std,nmse_db_aggregate,cosine_similarity_rho,beamforming_gain_mean,beamforming_gain_std,beamforming_loss_db,spectral_efficiency_bps_hz,nmse_db_p5,nmse_db_median,nmse_db_p95,nmse_db_worst,encoder_ms_ue,decoder_ms_gnb,inference_ms,encoder_params,decoder_params,index_overhead_bits,feedback_bits_at_6bit
+deepmimo_o1_3p5_downloaded_pooled_5t0_10t2_15t2_10t0,data/processed_deepmimo,12000,DeepCSI,4,512,75.0,-15.5783,1.7964,-15.1413,0.9859,0.972,0.0181,-0.1234,3.422,-18.0871,-15.7641,-12.3716,-3.1967,0.6492,1.7714,0.4111,1049406.0,1053986.0,,
+deepmimo_o1_3p5_downloaded_pooled_5t0_10t2_15t2_10t0,data/processed_deepmimo,12000,DeepCSI,16,128,93.75,-12.6521,1.5731,-12.3492,0.9719,0.9448,0.0239,-0.2467,3.3847,-15.0207,-12.7941,-9.9139,-4.7097,0.455,1.4492,0.317,262590.0,267554.0,,
+deepmimo_o1_3p5_downloaded_pooled_5t0_10t2_15t2_10t0,data/processed_deepmimo,12000,DeepCSI,32,64,96.88,-10.1054,1.3292,-9.8719,0.9497,0.9025,0.0411,-0.4455,3.3242,-11.8954,-10.2677,-7.6692,-2.0036,0.4718,1.5025,0.3216,131454.0,136482.0,,
+deepmimo_o1_3p5_downloaded_pooled_5t0_10t2_15t2_10t0,data/processed_deepmimo,12000,DCT Baseline,4,512,75.0,-6.64,1.66,-6.37,0.8876,0.7898,0.0795,-1.03,3.1477,-10.0349,-6.1154,-4.8804,-4.1323,,,0.544,,,1656.0,4728.0
+deepmimo_o1_3p5_downloaded_pooled_5t0_10t2_15t2_10t0,data/processed_deepmimo,12000,DCT Baseline,16,128,93.75,-1.82,0.42,-1.8,0.6079,0.3721,0.0611,-4.29,2.2267,-2.5178,-1.7831,-1.2309,-0.9675,,,0.563,,,686.0,1454.0
+deepmimo_o1_3p5_downloaded_pooled_5t0_10t2_15t2_10t0,data/processed_deepmimo,12000,DCT Baseline,32,64,96.88,-0.96,0.24,-0.95,0.467,0.22,0.0413,-6.58,1.6665,-1.3665,-0.9444,-0.6325,-0.4756,,,0.506,,,407.0,791.0
+deepmimo_o1_3p5_downloaded_pooled_5t0_10t2_15t2_10t0,data/processed_deepmimo,12000,PCA Baseline,4,512,75.0,-21.13,5.8,-17.0,0.9897,0.9802,0.0445,-0.09,3.4316,-30.8327,-21.5359,-11.3845,-0.9056,0.0279,0.0247,0.0526,1048576.0,1048576.0,0.0,3072.0
+deepmimo_o1_3p5_downloaded_pooled_5t0_10t2_15t2_10t0,data/processed_deepmimo,12000,PCA Baseline,16,128,93.75,-6.11,4.26,-4.43,0.7653,0.6417,0.2816,-1.93,2.706,-14.0424,-5.6618,-0.1147,0.0005,0.0173,0.0183,0.0357,262144.0,262144.0,0.0,768.0
+deepmimo_o1_3p5_downloaded_pooled_5t0_10t2_15t2_10t0,data/processed_deepmimo,12000,PCA Baseline,32,64,96.88,-3.55,3.74,-2.36,0.5642,0.4244,0.3345,-3.72,1.9615,-11.0387,-2.3841,-0.0081,0.0022,0.0128,0.0182,0.031,131072.0,131072.0,0.0,384.0

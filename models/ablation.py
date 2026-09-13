@@ -49,8 +49,12 @@ def main():
     # immune to a decay the others were fighting. 0 puts every arm on the same
     # footing, which is the only way the comparison means anything.
     parser.add_argument("--weight-decay", type=float, default=0.0)
-    parser.add_argument("--out", type=str, default="results/ablation.csv")
-    parser.add_argument("--work-dir", type=str, default="results/_ablation")
+    # Defaults to the weight-decay-0 filename, not results/ablation.csv. That
+    # file holds the original CONFOUNDED sweep, which is kept deliberately as
+    # the record of a withdrawn result; defaulting there meant a re-run
+    # silently overwrote the evidence of what went wrong.
+    parser.add_argument("--out", type=str, default="results/ablation_wd0.csv")
+    parser.add_argument("--work-dir", type=str, default="results/_ablation_wd0")
     args = parser.parse_args()
 
     work = Path(args.work_dir)

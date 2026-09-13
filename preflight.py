@@ -60,14 +60,14 @@ def main():
 
     check("Dataset files exist", train_p.exists() and val_p.exists() and test_p.exists() and norm_p.exists(),
           "Missing dataset. Run one of:\n"
-          "         python data/generate_data.py                  (synthetic)\n"
-          "         python data/prepare_cost2100.py --mat-dir ...  (real COST2100)")
+          "         python data/generate_data.py         (synthetic)\n"
+          "         python data/prepare_deepmimo.py      (real ray-traced)")
 
     train_data = np.load(train_p)
     val_data = np.load(val_p)
     test_data = np.load(test_p)
 
-    # Sample counts differ between the synthetic set and the COST2100 splits, so
+    # Sample counts differ between the synthetic and DeepMIMO sets, so
     # only the per-sample geometry is fixed.
     for name, arr in (("Train", train_data), ("Val", val_data), ("Test", test_data)):
         check(f"{name} shape is (N, 2, 32, 32) [N={len(arr)}]",

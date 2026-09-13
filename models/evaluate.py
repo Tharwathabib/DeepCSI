@@ -33,15 +33,13 @@ from models.pca_baseline import evaluate_pca_baseline
 # figure is meaningless without it.
 SNR_DB = 10.0
 
-# Published results on the COST2100 indoor benchmark, for context in the results
-# table. Sources:
-#   CsiNet -- Wen, Shih & Jin, IEEE WCL 2018, Table I
-#   CRNet  -- Lu et al., IEEE ICC 2020 (github.com/Kylin9511/CRNet)
-# These are reference values, not measurements from this run.
-LITERATURE_NMSE_DB = {
-    "CsiNet (published, indoor)": {4: -17.36, 16: -8.65, 32: -6.24},
-    "CRNet (published, indoor)": {4: -26.99, 16: -11.35, 32: -8.93},
-}
+# Published CsiNet/CRNet reference values used to sit here and were appended to
+# the results table when the dataset was COST2100. That dataset is paid and out
+# of scope, so the branch could never fire and the columns could never be a
+# like-for-like comparison -- those numbers are measured on COST2100 indoor and
+# this project measures DeepMIMO O1 outdoor. Printing them beside our own would
+# invite exactly the comparison the README says cannot be made, so they are
+# gone rather than dormant.
 
 
 def measure_latency(model, test_tensor, device, n_runs: int = 100):
@@ -203,12 +201,24 @@ def generate_plots(df_combined, sample_orig, sample_recon_cr16, sample_dct_cr16,
     plt.plot(df_deepcsi["compression_ratio"], deepcsi_gain_pct, "o-", color="#2ca02c", linewidth=2.5, label="DeepCSI MRT Gain")
     plt.plot(df_dct["compression_ratio"], dct_gain_pct, "s--", color="#d62728", linewidth=2.5, label="2D DCT MRT Gain")
 
+    df_pca_g = df_combined[df_combined["method"] == "PCA Baseline"]
+    if not df_pca_g.empty:
+        plt.plot(df_pca_g["compression_ratio"], df_pca_g["beamforming_gain_mean"] * 100.0,
+                 "^-.", color="#9467bd", linewidth=2.5, label="PCA / KLT MRT Gain")
+
     plt.axhline(90.0, color="#7f7f7f", linestyle=":", label="90% Power Retention Target")
     plt.title("Downstream MRT Beamforming Gain vs Compression Ratio", fontsize=14, fontweight="bold")
     plt.xlabel("Compression Ratio (CR)", fontsize=12)
     plt.ylabel("Normalized Beamforming Power Gain (%)", fontsize=12)
     plt.xticks([4, 16, 32], ["CR=4", "CR=16", "CR=32"])
-    plt.ylim(50, 102)
+    # Fit the axis to the data instead of the hardcoded (50, 102), which was set
+    # when every gain read ~99.98% because of the offset bug. Real baselines now
+    # reach far lower -- DeepMIMO DCT hits 22.0% at CR=32 -- and a fixed floor of
+    # 50 silently pushes those bars off the figure, which is the same class of
+    # defect as a chart that lies by axis choice.
+    all_gains = pd.concat([deepcsi_gain_pct, dct_gain_pct] +
+                          ([df_pca_g["beamforming_gain_mean"] * 100.0] if not df_pca_g.empty else []))
+    plt.ylim(max(0.0, float(all_gains.min()) - 8.0), 102)
     plt.grid(True, linestyle="--", alpha=0.6)
     plt.legend(fontsize=11)
     plt.tight_layout()
@@ -265,7 +275,7 @@ def main():
             f"Test data not found at {test_path}.\n"
             "Run one of:\n"
             "  python data/generate_data.py                 (synthetic)\n"
-            "  python data/prepare_cost2100.py --mat-dir ... (real COST2100)"
+            "  python data/prepare_deepmimo.py               (real ray-traced)"
         )
 
     # The normalisation metadata drives the de-offset used by rho and by the
@@ -358,6 +368,15 @@ def main():
     # Combine results
     df_combined = pd.concat([df_deepcsi, df_dct, df_pca], ignore_index=True)
 
+    # Stamp provenance onto every row. These CSVs are tracked in git as the
+    # evidence behind the README, and several tracks (7k synthetic, 35k
+    # synthetic, pooled DeepMIMO) write the same filename into different
+    # directories. Without this a reader comparing a CSV to the README finds a
+    # ~6 dB disagreement and no way to tell which run they are holding.
+    df_combined.insert(0, "dataset_source", (norm_params or {}).get("source", "unknown"))
+    df_combined.insert(1, "data_dir", str(args.data_dir))
+    df_combined.insert(2, "n_test", len(test_data_np))
+
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
 
@@ -368,13 +387,6 @@ def main():
     nmse_col = "nmse_db_aggregate" if "nmse_db_aggregate" in df_combined else "nmse_db_mean"
     pivot_nmse = df_combined.pivot(index="compression_ratio", columns="method", values=nmse_col)
 
-    # Append published reference results for context. Only meaningful when
-    # evaluating on the COST2100 indoor benchmark these numbers came from.
-    source = (norm_params or {}).get("source", "")
-    if source.startswith("cost2100_indoor"):
-        for name, values in LITERATURE_NMSE_DB.items():
-            pivot_nmse[name] = [values.get(cr, np.nan) for cr in pivot_nmse.index]
-
     pivot_nmse.to_csv(results_dir / "nmse_comparison.csv")
 
     pivot_gain = df_combined.pivot(index="compression_ratio", columns="method", values="beamforming_gain_mean")
@@ -383,8 +395,6 @@ def main():
     print(f"\nSaved combined metrics to '{results_dir / 'metrics.csv'}'")
     print("\n=== NMSE Comparison Table (dB, log-of-mean convention) ===")
     print(pivot_nmse.round(2).to_string())
-    if source.startswith("cost2100_indoor"):
-        print("  (CsiNet/CRNet columns are published reference values, not measured here.)")
     print("\n=== Downstream Beamforming Power Gain Comparison (G = rho^2) ===")
     print((pivot_gain * 100.0).round(2).to_string() + " %")
 

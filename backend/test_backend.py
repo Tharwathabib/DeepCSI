@@ -81,9 +81,14 @@ def test_predict_with_mocked_model(monkeypatch, tmp_path):
     assert 0.0 <= data["beamforming_gain_percent"] <= 100.0
     assert "beamforming_loss_db" in data
     # An UNTRAINED model reconstructing a random tensor must not look good.
-    # This previously asserted <= 0.01 dB, which only held because the metric
-    # was measured without the offset and saturated near 100% for any output.
-    assert data["beamforming_loss_db"] <= 0.0
+    # The previous assertion (<= 0.01 dB) held only because the metric was
+    # measured without the offset and saturated near 100% for any output.
+    # `<= 0.0` is no better: gain is in [0,1] so 10*log10(gain) is always <= 0,
+    # and the check can never fail. Assert something the bug would break.
+    assert data["beamforming_loss_db"] < -0.05, (
+        "an untrained model showed near-zero beamforming loss -- the offset is "
+        "not being removed"
+    )
     assert data["beamforming_gain_percent"] < 99.0, (
         "an untrained model scored near-perfect beamforming gain -- the "
         "offset is not being removed"
